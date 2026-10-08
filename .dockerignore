@@ -1,0 +1,10 @@
+.git
+.agents
+.codex
+.aws
+node_modules
+dist
+coverage
+.env
+.env.*
+*.log

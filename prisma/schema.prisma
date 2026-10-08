@@ -1,0 +1,578 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  ADMIN
+  OWNER
+  GUEST
+  PROPERTY_MANAGER
+  INSPECTOR
+  CONTRACTOR
+}
+
+enum UserStatus {
+  INVITED
+  PENDING
+  ACTIVE
+  SUSPENDED
+  REVOKED
+}
+
+enum AuthChallengePurpose {
+  VERIFY_EMAIL
+  RESET_PASSWORD
+}
+
+enum PropertyStatus {
+  SUBMITTED
+  UNDER_REVIEW
+  INSPECTION_PENDING
+  APPROVED
+  CHANGES_REQUESTED
+}
+
+enum PropertyOccupancy {
+  OCCUPIED
+  VACANT
+  UNDER_MAINTENANCE
+  AVAILABLE_FOR_SHORT_LET
+  TEMPORARILY_UNAVAILABLE
+}
+
+enum PropertyFilePurpose {
+  PHOTO
+  DOCUMENT
+}
+
+enum PropertyFileStatus {
+  PENDING
+  READY
+}
+
+enum InspectionStatus {
+  SCHEDULED
+  IN_PROGRESS
+  COMPLETED
+  REPORT_READY
+  CANCELLED
+}
+
+enum InspectionFindingSeverity {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum InspectionEvidenceType {
+  PHOTO
+  DOCUMENT
+}
+
+enum InspectionEvidenceStatus {
+  PENDING
+  READY
+}
+
+enum MaintenancePriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum MaintenanceStatus {
+  REPORTED
+  ASSIGNED
+  PENDING_APPROVAL
+  APPROVED
+  QUOTE_REJECTED
+  IN_PROGRESS
+  COMPLETED
+  CLOSED
+}
+
+enum MaintenanceQuoteStatus {
+  SUBMITTED
+  APPROVED
+  REJECTED
+}
+
+enum MaintenanceEvidenceType {
+  PHOTO
+  DOCUMENT
+}
+
+enum MaintenanceEvidenceStatus {
+  PENDING
+  READY
+}
+
+enum MaintenanceEvidenceKind {
+  ISSUE
+  WORK
+  COMPLETION
+}
+
+enum StayListingStatus {
+  DRAFT
+  PENDING_REVIEW
+  PUBLISHED
+  REJECTED
+  ARCHIVED
+}
+
+enum BookingStatus {
+  REQUESTED
+  CONFIRMED
+  DECLINED
+  CANCELLED
+  COMPLETED
+}
+
+enum ManagerTaskStatus {
+  OPEN
+  IN_PROGRESS
+  DONE
+  CANCELLED
+}
+
+model User {
+  id                     String     @id @default(uuid()) @db.Uuid
+  email                  String     @unique @db.VarChar(320)
+  phone                  String?    @unique @db.VarChar(30)
+  passwordHash           String
+  role                   UserRole
+  status                 UserStatus @default(PENDING)
+  emailVerifiedAt        DateTime?
+  verificationCodeHash   String?
+  verificationExpiresAt  DateTime?
+  invitationTokenHash    String?
+  invitationExpiresAt    DateTime?
+  invitedAt              DateTime?
+  invitedById            String?    @db.Uuid
+  refreshTokenHash       String?
+  sessionVersion         Int        @default(0)
+  createdAt              DateTime   @default(now())
+  updatedAt              DateTime   @updatedAt
+
+  profile      UserProfile?
+  invitedBy    User?      @relation("UserInvitations", fields: [invitedById], references: [id], onDelete: SetNull)
+  invitedUsers User[]     @relation("UserInvitations")
+  authChallenges AuthChallenge[]
+  ownedProperties Property[] @relation("PropertyOwner")
+  managedProperties Property[] @relation("PropertyManager")
+  uploadedPropertyFiles PropertyFile[]
+  profileImageUploads ProfileImageUpload[]
+  assignedInspections Inspection[] @relation("InspectionInspector")
+  uploadedInspectionEvidence InspectionEvidence[]
+  assignedMaintenance MaintenanceRequest[] @relation("MaintenanceContractor")
+  maintenanceUpdates MaintenanceUpdate[]
+  uploadedMaintenanceEvidence MaintenanceEvidence[]
+  auditEvents AuditEvent[]
+  guestBookings Booking[] @relation("BookingGuest")
+  managerTasks ManagerTask[] @relation("TaskManager")
+  createdTasks ManagerTask[] @relation("TaskCreator")
+  occupancyEvents OccupancyEvent[]
+  expenses FinancialExpense[]
+
+  @@index([role, status])
+  @@index([status])
+  @@index([invitedById])
+  @@map("users")
+}
+
+model Property {
+  id String @id @default(uuid()) @db.Uuid
+  ownerId String @db.Uuid
+  managerId String? @db.Uuid
+  name String @db.VarChar(160)
+  type String @db.VarChar(40)
+  description String @db.Text
+  address String @db.VarChar(250)
+  city String @db.VarChar(100)
+  state String @db.VarChar(100)
+  country String @default("Nigeria") @db.VarChar(100)
+  occupancyStatus PropertyOccupancy @default(VACANT)
+  tenantName String? @db.VarChar(160)
+  tenantPhone String? @db.VarChar(30)
+  tenancyStart DateTime? @db.Date
+  status PropertyStatus @default(SUBMITTED)
+  reviewNote String? @db.Text
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  owner User @relation("PropertyOwner", fields: [ownerId], references: [id])
+  manager User? @relation("PropertyManager", fields: [managerId], references: [id], onDelete: SetNull)
+  files PropertyFile[]
+  inspections Inspection[]
+  maintenanceRequests MaintenanceRequest[]
+  stayListing StayListing?
+  managerTasks ManagerTask[]
+  occupancyEvents OccupancyEvent[]
+  expenses FinancialExpense[]
+
+  @@index([ownerId, createdAt])
+  @@index([managerId, status])
+  @@index([status, createdAt])
+  @@map("properties")
+}
+
+model PropertyFile {
+  id String @id @default(uuid()) @db.Uuid
+  propertyId String @db.Uuid
+  uploaderId String @db.Uuid
+  purpose PropertyFilePurpose
+  status PropertyFileStatus @default(PENDING)
+  objectKey String @unique @db.VarChar(500)
+  originalName String @db.VarChar(255)
+  contentType String @db.VarChar(100)
+  sizeBytes Int
+  isCover Boolean @default(false)
+  createdAt DateTime @default(now())
+  completedAt DateTime?
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  uploader User @relation(fields: [uploaderId], references: [id])
+
+  @@index([propertyId, status, purpose])
+  @@map("property_files")
+}
+
+model Inspection {
+  id String @id @default(uuid()) @db.Uuid
+  propertyId String @db.Uuid
+  inspectorId String @db.Uuid
+  status InspectionStatus @default(SCHEDULED)
+  purpose String @db.VarChar(160)
+  summary String @db.Text
+  scheduledAt DateTime
+  completedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  inspector User @relation("InspectionInspector", fields: [inspectorId], references: [id])
+  report InspectionReport?
+  evidence InspectionEvidence[]
+
+  @@index([propertyId, scheduledAt])
+  @@index([inspectorId, status, scheduledAt])
+  @@index([status, scheduledAt])
+  @@map("inspections")
+}
+
+model InspectionReport {
+  id String @id @default(uuid()) @db.Uuid
+  inspectionId String @unique @db.Uuid
+  overview String @db.Text
+  recommendations String[]
+  submittedAt DateTime @default(now())
+  inspection Inspection @relation(fields: [inspectionId], references: [id], onDelete: Cascade)
+  findings InspectionFinding[]
+
+  @@map("inspection_reports")
+}
+
+model InspectionFinding {
+  id String @id @default(uuid()) @db.Uuid
+  reportId String @db.Uuid
+  area String @db.VarChar(100)
+  title String @db.VarChar(160)
+  severity InspectionFindingSeverity
+  detail String @db.Text
+  recommendation String @db.Text
+  position Int
+  report InspectionReport @relation(fields: [reportId], references: [id], onDelete: Cascade)
+
+  @@index([reportId, position])
+  @@map("inspection_findings")
+}
+
+model InspectionEvidence {
+  id String @id @default(uuid()) @db.Uuid
+  inspectionId String @db.Uuid
+  uploaderId String @db.Uuid
+  status InspectionEvidenceStatus @default(PENDING)
+  type InspectionEvidenceType
+  objectKey String @unique @db.VarChar(500)
+  originalName String @db.VarChar(255)
+  caption String @db.VarChar(250)
+  contentType String @db.VarChar(100)
+  sizeBytes Int
+  createdAt DateTime @default(now())
+  completedAt DateTime?
+  inspection Inspection @relation(fields: [inspectionId], references: [id], onDelete: Cascade)
+  uploader User @relation(fields: [uploaderId], references: [id])
+
+  @@index([inspectionId, status, createdAt])
+  @@map("inspection_evidence")
+}
+
+model MaintenanceRequest {
+  id String @id @default(uuid()) @db.Uuid
+  propertyId String @db.Uuid
+  contractorId String? @db.Uuid
+  issue String @db.VarChar(160)
+  description String @db.Text
+  priority MaintenancePriority @default(MEDIUM)
+  status MaintenanceStatus @default(REPORTED)
+  assignmentNote String? @db.Text
+  reportedAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  completedAt DateTime?
+  closedAt DateTime?
+
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  contractor User? @relation("MaintenanceContractor", fields: [contractorId], references: [id], onDelete: SetNull)
+  updates MaintenanceUpdate[]
+  evidence MaintenanceEvidence[]
+  quotes MaintenanceQuote[]
+
+  @@index([propertyId, reportedAt])
+  @@index([contractorId, status, reportedAt])
+  @@index([status, reportedAt])
+  @@map("maintenance_requests")
+}
+
+model MaintenanceQuote {
+  id String @id @default(uuid()) @db.Uuid
+  requestId String @db.Uuid
+  contractorId String @db.Uuid
+  revision Int
+  status MaintenanceQuoteStatus @default(SUBMITTED)
+  amountNgn Int
+  scope String @db.Text
+  expectedDurationDays Int
+  notes String @db.Text
+  submittedAt DateTime @default(now())
+  decidedAt DateTime?
+  decisionNote String? @db.Text
+
+  request MaintenanceRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  @@unique([requestId, revision])
+  @@index([requestId, submittedAt])
+  @@map("maintenance_quotes")
+}
+
+model AuditEvent {
+  id String @id @default(uuid()) @db.Uuid
+  actorId String? @db.Uuid
+  actorRole UserRole
+  action String @db.VarChar(80)
+  entityType String @db.VarChar(40)
+  entityId String @db.Uuid
+  summary String @db.VarChar(500)
+  createdAt DateTime @default(now())
+
+  actor User? @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt, id])
+  @@index([entityType, entityId, createdAt])
+  @@index([actorId, createdAt])
+  @@map("audit_events")
+}
+
+model MaintenanceUpdate {
+  id String @id @default(uuid()) @db.Uuid
+  requestId String @db.Uuid
+  authorId String @db.Uuid
+  status MaintenanceStatus
+  note String @db.Text
+  createdAt DateTime @default(now())
+
+  request MaintenanceRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  author User @relation(fields: [authorId], references: [id])
+
+  @@index([requestId, createdAt])
+  @@map("maintenance_updates")
+}
+
+model MaintenanceEvidence {
+  id String @id @default(uuid()) @db.Uuid
+  requestId String @db.Uuid
+  uploaderId String @db.Uuid
+  status MaintenanceEvidenceStatus @default(PENDING)
+  type MaintenanceEvidenceType
+  kind MaintenanceEvidenceKind
+  objectKey String @unique @db.VarChar(500)
+  originalName String @db.VarChar(255)
+  caption String @db.VarChar(250)
+  contentType String @db.VarChar(100)
+  sizeBytes Int
+  createdAt DateTime @default(now())
+  completedAt DateTime?
+
+  request MaintenanceRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  uploader User @relation(fields: [uploaderId], references: [id])
+
+  @@index([requestId, status, createdAt])
+  @@map("maintenance_evidence")
+}
+
+model UserProfile {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @unique @db.Uuid
+  firstName String   @db.VarChar(80)
+  lastName  String   @db.VarChar(80)
+  country   String   @default("Nigeria") @db.VarChar(80)
+  timezone  String   @default("Africa/Lagos") @db.VarChar(80)
+  avatarObjectKey String? @db.VarChar(500)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_profiles")
+}
+
+model ProfileImageUpload {
+  id String @id @default(uuid()) @db.Uuid
+  userId String @db.Uuid
+  objectKey String @unique @db.VarChar(500)
+  contentType String @db.VarChar(100)
+  sizeBytes Int
+  createdAt DateTime @default(now())
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@map("profile_image_uploads")
+}
+
+model AuthChallenge {
+  id             String               @id @default(uuid()) @db.Uuid
+  userId         String               @db.Uuid
+  purpose        AuthChallengePurpose
+  codeHash       String
+  expiresAt      DateTime
+  resendAt       DateTime
+  attempts       Int                  @default(0)
+  resetTokenHash String?
+  createdAt      DateTime             @default(now())
+  user           User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, purpose])
+  @@index([expiresAt])
+  @@map("auth_challenges")
+}
+
+model StayListing {
+  id String @id @default(uuid()) @db.Uuid
+  propertyId String @unique @db.Uuid
+  title String @db.VarChar(160)
+  description String @db.Text
+  hostNote String @db.Text
+  pricePerNightNgn Int
+  cleaningFeeNgn Int @default(0)
+  maxGuests Int
+  bedrooms Int
+  bathrooms Int
+  minimumNights Int @default(1)
+  amenities String[]
+  houseRules String[]
+  status StayListingStatus @default(DRAFT)
+  reviewNote String? @db.Text
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  blocks StayBlock[]
+  bookings Booking[]
+
+  @@index([status, createdAt])
+  @@map("stay_listings")
+}
+
+model StayBlock {
+  id String @id @default(uuid()) @db.Uuid
+  listingId String @db.Uuid
+  startDate DateTime @db.Date
+  endDate DateTime @db.Date
+  reason String @db.VarChar(250)
+  createdAt DateTime @default(now())
+  listing StayListing @relation(fields: [listingId], references: [id], onDelete: Cascade)
+
+  @@index([listingId, startDate, endDate])
+  @@map("stay_blocks")
+}
+
+model Booking {
+  id String @id @default(uuid()) @db.Uuid
+  reference String @unique @db.VarChar(32)
+  listingId String @db.Uuid
+  guestId String @db.Uuid
+  checkIn DateTime @db.Date
+  checkOut DateTime @db.Date
+  guests Int
+  guestName String @db.VarChar(160)
+  guestEmail String @db.VarChar(320)
+  guestPhone String @db.VarChar(30)
+  nightlyRateNgn Int
+  cleaningFeeNgn Int
+  subtotalNgn Int
+  totalNgn Int
+  status BookingStatus @default(REQUESTED)
+  decisionNote String? @db.Text
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  listing StayListing @relation(fields: [listingId], references: [id])
+  guest User @relation("BookingGuest", fields: [guestId], references: [id])
+
+  @@index([listingId, status, checkIn, checkOut])
+  @@index([guestId, createdAt])
+  @@map("bookings")
+}
+
+model ManagerTask {
+  id String @id @default(uuid()) @db.Uuid
+  propertyId String @db.Uuid
+  managerId String @db.Uuid
+  createdById String @db.Uuid
+  title String @db.VarChar(160)
+  description String @db.Text
+  status ManagerTaskStatus @default(OPEN)
+  dueAt DateTime?
+  completedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  manager User @relation("TaskManager", fields: [managerId], references: [id])
+  createdBy User @relation("TaskCreator", fields: [createdById], references: [id])
+
+  @@index([managerId, status, dueAt])
+  @@index([propertyId, createdAt])
+  @@map("manager_tasks")
+}
+
+model OccupancyEvent {
+  id String @id @default(uuid()) @db.Uuid
+  propertyId String @db.Uuid
+  actorId String @db.Uuid
+  status PropertyOccupancy
+  note String @db.Text
+  createdAt DateTime @default(now())
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  actor User @relation(fields: [actorId], references: [id])
+
+  @@index([propertyId, createdAt])
+  @@map("occupancy_events")
+}
+
+model FinancialExpense {
+  id String @id @default(uuid()) @db.Uuid
+  propertyId String @db.Uuid
+  createdById String @db.Uuid
+  amountNgn Int
+  category String @db.VarChar(60)
+  description String @db.VarChar(500)
+  incurredOn DateTime @db.Date
+  createdAt DateTime @default(now())
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  createdBy User @relation(fields: [createdById], references: [id])
+
+  @@index([propertyId, incurredOn])
+  @@map("financial_expenses")
+}

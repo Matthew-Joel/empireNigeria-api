@@ -1,0 +1,1 @@
+ALTER TYPE "UserStatus" ADD VALUE 'REVOKED';
