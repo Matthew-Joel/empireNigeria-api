@@ -6,12 +6,13 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
-import { PropertyStatus, User, UserProfile, UserRole, UserStatus } from '@prisma/client'
+import { Prisma, PropertyStatus, User, UserProfile, UserRole, UserStatus } from '@prisma/client'
 import { randomBytes } from 'node:crypto'
 import * as argon2 from 'argon2'
 import { PrismaService } from '../../database/prisma.service'
 import { NotificationsService } from '../notifications/notifications.service'
 import { CreateStaffInvitationDto } from './dto/create-staff-invitation.dto'
+import { reportingPeriod } from '../../common/reporting-period'
 
 type UserWithProfile = User & { profile: UserProfile | null }
 
@@ -30,7 +31,7 @@ export class AdminService {
   ) {}
 
   async overview() {
-    const [totalUsers, invitedStaff, pendingVerification, totalProperties, reviewQueue, inspectionPending, recentUsers, recentProperties] = await Promise.all([
+    const [totalUsers, invitedStaff, pendingVerification, totalProperties, reviewQueue, inspectionPending, recentUsers, recentProperties, activity] = await Promise.all([
       this.prisma.user.count(),
       this.prisma.user.count({ where: { status: UserStatus.INVITED } }),
       this.prisma.user.count({ where: { status: UserStatus.PENDING } }),
@@ -39,30 +40,55 @@ export class AdminService {
       this.prisma.property.count({ where: { status: PropertyStatus.INSPECTION_PENDING } }),
       this.prisma.user.findMany({ take: 5, orderBy: { createdAt: 'desc' }, select: { id: true, email: true, role: true, status: true, createdAt: true, profile: { select: { firstName: true, lastName: true } } } }),
       this.prisma.property.findMany({ take: 5, orderBy: { createdAt: 'desc' }, select: { id: true, name: true, status: true, createdAt: true, owner: { select: { email: true } } } }),
+      this.overviewActivity(),
     ])
-    return { totalUsers, invitedStaff, pendingVerification, totalProperties, reviewQueue, inspectionPending, recentUsers, recentProperties }
+    return { totalUsers, invitedStaff, pendingVerification, totalProperties, reviewQueue, inspectionPending, recentUsers, recentProperties, ...activity }
+  }
+
+  private async overviewActivity() {
+    const today = new Date(Date.now() + 3_600_000).toISOString().slice(0, 10)
+    const currentFrom = today.slice(0, 7) + '-01'
+    const previousMonth = new Date(`${currentFrom}T00:00:00.000Z`)
+    previousMonth.setUTCMonth(previousMonth.getUTCMonth() - 1)
+    const previousFrom = previousMonth.toISOString().slice(0, 10)
+    const range = reportingPeriod({ from: previousFrom, to: today })
+    const currentStart = reportingPeriod({ from: currentFrom, to: today }).start
+    const rows = await this.prisma.$queryRaw<Array<{ metric: string; current: number; previous: number }>>(Prisma.sql`
+      WITH records AS (
+        SELECT 'totalUsers' AS metric, "createdAt" FROM users
+        UNION ALL SELECT 'invitedStaff', "createdAt" FROM users WHERE status = 'INVITED'
+        UNION ALL SELECT 'pendingVerification', "createdAt" FROM users WHERE status = 'PENDING'
+        UNION ALL SELECT 'totalProperties', "createdAt" FROM properties
+        UNION ALL SELECT 'reviewQueue', "createdAt" FROM properties WHERE status IN ('SUBMITTED', 'UNDER_REVIEW', 'CHANGES_REQUESTED')
+        UNION ALL SELECT 'inspectionPending', "createdAt" FROM properties WHERE status = 'INSPECTION_PENDING'
+      )
+      SELECT metric, count(*) FILTER (WHERE "createdAt" >= ${currentStart})::int AS current,
+        count(*) FILTER (WHERE "createdAt" < ${currentStart})::int AS previous
+      FROM records WHERE "createdAt" >= ${range.start} AND "createdAt" < ${range.end} GROUP BY metric
+    `)
+    const metricActivity = Object.fromEntries(['totalUsers', 'invitedStaff', 'pendingVerification', 'totalProperties', 'reviewQueue', 'inspectionPending'].map((metric) => {
+      const row = rows.find((item) => item.metric === metric)
+      return [metric, { current: row?.current ?? 0, previous: row?.previous ?? 0 }]
+    }))
+    // These are creation cohorts with CURRENT statuses, never historical queue snapshots.
+    return { metricActivity, activityPeriod: { currentFrom, currentTo: today, previousFrom, previousTo: new Date(currentStart.getTime() + 3_600_000 - 86_400_000).toISOString().slice(0, 10), timeZone: range.timeZone, basis: 'Records created in each month; status-filtered metrics use their current status.' } }
   }
 
   async analytics() {
-    const start = new Date()
-    start.setUTCDate(1)
-    start.setUTCHours(0, 0, 0, 0)
-    start.setUTCMonth(start.getUTCMonth() - 5)
+    const range = reportingPeriod()
     type MonthlyCount = { month: string; count: number }
     const [properties, inspections, maintenance, completed, maintenanceStatuses] = await Promise.all([
-      this.prisma.$queryRaw<MonthlyCount[]>`SELECT to_char(date_trunc('month', "createdAt"), 'YYYY-MM') AS month, count(*)::int AS count FROM "properties" WHERE "createdAt" >= ${start} GROUP BY 1`,
-      this.prisma.$queryRaw<MonthlyCount[]>`SELECT to_char(date_trunc('month', "createdAt"), 'YYYY-MM') AS month, count(*)::int AS count FROM "inspections" WHERE "createdAt" >= ${start} GROUP BY 1`,
-      this.prisma.$queryRaw<MonthlyCount[]>`SELECT to_char(date_trunc('month', "reportedAt"), 'YYYY-MM') AS month, count(*)::int AS count FROM "maintenance_requests" WHERE "reportedAt" >= ${start} GROUP BY 1`,
-      this.prisma.$queryRaw<MonthlyCount[]>`SELECT to_char(date_trunc('month', "completedAt"), 'YYYY-MM') AS month, count(*)::int AS count FROM "maintenance_requests" WHERE "completedAt" >= ${start} GROUP BY 1`,
+      this.prisma.$queryRaw<MonthlyCount[]>`SELECT to_char("createdAt" AT TIME ZONE 'UTC' AT TIME ZONE 'Africa/Lagos', 'YYYY-MM') AS month, count(*)::int AS count FROM "properties" WHERE "createdAt" >= ${range.start} AND "createdAt" < ${range.end} GROUP BY 1`,
+      this.prisma.$queryRaw<MonthlyCount[]>`SELECT to_char("createdAt" AT TIME ZONE 'UTC' AT TIME ZONE 'Africa/Lagos', 'YYYY-MM') AS month, count(*)::int AS count FROM "inspections" WHERE "createdAt" >= ${range.start} AND "createdAt" < ${range.end} GROUP BY 1`,
+      this.prisma.$queryRaw<MonthlyCount[]>`SELECT to_char("reportedAt" AT TIME ZONE 'UTC' AT TIME ZONE 'Africa/Lagos', 'YYYY-MM') AS month, count(*)::int AS count FROM "maintenance_requests" WHERE "reportedAt" >= ${range.start} AND "reportedAt" < ${range.end} GROUP BY 1`,
+      this.prisma.$queryRaw<MonthlyCount[]>`SELECT to_char("completedAt" AT TIME ZONE 'UTC' AT TIME ZONE 'Africa/Lagos', 'YYYY-MM') AS month, count(*)::int AS count FROM "maintenance_requests" WHERE "completedAt" >= ${range.start} AND "completedAt" < ${range.end} GROUP BY 1`,
       this.prisma.maintenanceRequest.groupBy({ by: ['status'], _count: { _all: true } }),
     ])
     const find = (rows: MonthlyCount[], month: string) => rows.find((row) => row.month === month)?.count ?? 0
-    const months = Array.from({ length: 6 }, (_, index) => {
-      const date = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + index, 1))
-      const month = date.toISOString().slice(0, 7)
-      return { month, label: new Intl.DateTimeFormat('en-NG', { month: 'short', year: '2-digit', timeZone: 'UTC' }).format(date), properties: find(properties, month), inspections: find(inspections, month), maintenance: find(maintenance, month), completed: find(completed, month) }
+    const months = range.months.map(({ month, label }) => {
+      return { month, label, properties: find(properties, month), inspections: find(inspections, month), maintenance: find(maintenance, month), completed: find(completed, month) }
     })
-    return { months, maintenanceStatuses: maintenanceStatuses.map((item) => ({ status: item.status, count: item._count._all })) }
+    return { months, timeZone: range.timeZone, maintenanceStatuses: maintenanceStatuses.map((item) => ({ status: item.status, count: item._count._all })) }
   }
 
   async auditLog(filters: { cursor?: string; action?: string; entityType?: string }) {

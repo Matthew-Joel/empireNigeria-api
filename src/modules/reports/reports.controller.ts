@@ -1,4 +1,4 @@
-import { Controller, Get, UseGuards } from '@nestjs/common'
+import { Controller, Get, Query, UseGuards } from '@nestjs/common'
 import { UserRole } from '@prisma/client'
 import { CurrentUser } from '../../common/decorators/current-user.decorator'
 import { Roles } from '../../common/decorators/roles.decorator'
@@ -10,5 +10,7 @@ type Actor = AuthenticatedRequest['user']
 @Controller('reports') @UseGuards(JwtAuthGuard, RolesGuard) @Roles(UserRole.ADMIN, UserRole.OWNER, UserRole.PROPERTY_MANAGER)
 export class ReportsController {
   constructor(private readonly reports: ReportsService) {}
-  @Get() summary(@CurrentUser() actor: Actor) { return this.reports.summary(actor) }
+  @Get() summary(@CurrentUser() actor: Actor, @Query('from') from?: string, @Query('to') to?: string) {
+    return this.reports.summary(actor, { from, to })
+  }
 }

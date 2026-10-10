@@ -194,7 +194,6 @@ export class InspectionsService {
       if (Date.now() - evidence.createdAt.getTime() > uploadLifetime) throw new BadRequestException('Evidence upload expired')
       const bytes = await this.storage.download(evidence.objectKey, evidence.sizeBytes)
       if (bytes.length !== evidence.sizeBytes || fileSignature(bytes) !== evidence.contentType) throw new BadRequestException('Evidence does not match its declared type or size')
-      await this.storage.scan(bytes)
       const readyKey = `inspections/${id}/${evidence.id}`
       await this.storage.move(evidence.objectKey, readyKey)
       await tx.inspectionEvidence.update({ where: { id: evidence.id }, data: { objectKey: readyKey, status: InspectionEvidenceStatus.READY, completedAt: new Date() } })

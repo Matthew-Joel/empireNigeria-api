@@ -38,7 +38,6 @@ export class ProfileImageService {
       if (Date.now() - record.createdAt.getTime() > uploadLifetime) throw new BadRequestException('Upload expired')
       const bytes = await this.storage.download(record.objectKey, record.sizeBytes, this.storage.profileBucket)
       if (bytes.length !== record.sizeBytes || fileSignature(bytes) !== record.contentType) throw new BadRequestException('Uploaded image does not match its declared type or size')
-      await this.storage.scan(bytes)
       const readyKey = `profiles/${userId}/${record.id}`
       await this.storage.move(record.objectKey, readyKey, this.storage.profileBucket)
       try {

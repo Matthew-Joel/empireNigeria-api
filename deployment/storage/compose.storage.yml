@@ -1,25 +1,5 @@
-# Preparation only. Supply a verified pinned official image and protected runtime env.
-# The API container must join empire-storage-private and use CLAMAV_HOST=clamav.
+# Preparation only. Supply a protected production runtime environment file.
 services:
-  clamav:
-    image: ${CLAMAV_IMAGE:?Set CLAMAV_IMAGE to a pinned official clamav/clamav release tag}
-    restart: unless-stopped
-    volumes:
-      - clamav-definitions:/var/lib/clamav
-      - ./clamd.conf:/etc/clamav/clamd.conf:ro
-    networks:
-      - storage-private
-      - definitions-egress
-    healthcheck:
-      test: ["CMD", "clamdscan", "--ping=1"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 5m
-    security_opt:
-      - no-new-privileges:true
-    # Deliberately no published ports: clamd has no network authentication.
-
   cleanup:
     build:
       context: ../..
@@ -38,12 +18,5 @@ services:
       - no-new-privileges:true
     stop_grace_period: 2m
 
-volumes:
-  clamav-definitions:
-
 networks:
-  storage-private:
-    name: empire-storage-private
-    internal: true
-  definitions-egress:
   cleanup-egress:

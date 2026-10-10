@@ -113,7 +113,6 @@ export class PropertiesService {
       if (Date.now() - record.createdAt.getTime() > 2 * 60 * 60 * 1000) throw new BadRequestException('Upload expired')
       const bytes = await this.storage.download(record.objectKey, record.sizeBytes)
       if (bytes.length !== record.sizeBytes || fileSignature(bytes) !== record.contentType) throw new BadRequestException('Uploaded file does not match its declared type or size')
-      await this.storage.scan(bytes)
       const readyKey = `properties/${id}/${record.id}`
       await this.storage.move(record.objectKey, readyKey)
       if (record.isCover) await tx.propertyFile.updateMany({ where: { propertyId: id, purpose: PropertyFilePurpose.PHOTO, status: PropertyFileStatus.READY }, data: { isCover: false } })

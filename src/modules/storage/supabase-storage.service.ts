@@ -1,6 +1,5 @@
 import { BadRequestException, Injectable, ServiceUnavailableException } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
-import { scanWithClamd } from './file-scanner'
 
 @Injectable()
 export class SupabaseStorageService {
@@ -87,21 +86,5 @@ export class SupabaseStorageService {
 
   async remove(path: string, bucket = this.propertyBucket) {
     await this.call(`/object/${encodeURIComponent(bucket)}`, 'DELETE', { prefixes: [path] })
-  }
-
-  async scan(bytes: Buffer) {
-    const host = this.config.get<string>('CLAMAV_HOST')?.trim()
-    const required = this.config.get<string>('FILE_SCAN_REQUIRED') === 'true' || this.config.get<string>('NODE_ENV') === 'production'
-    if (!host) {
-      if (required) throw new ServiceUnavailableException('File scanner is not configured')
-      return
-    }
-    const port = Number(this.config.get<string>('CLAMAV_PORT') || '3310')
-    if (!Number.isInteger(port) || port < 1 || port > 65535) throw new ServiceUnavailableException('File scanner port is invalid')
-    let result: string
-    try { result = await scanWithClamd(bytes, host, port) }
-    catch { throw new ServiceUnavailableException('File scanner is unavailable') }
-    if (/^stream: .+ FOUND$/.test(result)) throw new BadRequestException('Uploaded file failed malware scanning')
-    if (result !== 'stream: OK') throw new ServiceUnavailableException('File scanner could not verify this upload')
   }
 }

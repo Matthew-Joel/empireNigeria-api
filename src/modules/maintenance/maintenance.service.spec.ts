@@ -26,7 +26,7 @@ function setup() {
     $transaction: jest.fn(),
   }
   prisma.$transaction.mockImplementation(async (work: (tx: unknown) => Promise<unknown>) => work(prisma))
-  const storage = { signUpload: jest.fn().mockResolvedValue('https://storage.example/upload'), download: jest.fn(), scan: jest.fn(), move: jest.fn(), signedDownload: jest.fn(), remove: jest.fn() }
+  const storage = { signUpload: jest.fn().mockResolvedValue('https://storage.example/upload'), download: jest.fn(), move: jest.fn(), signedDownload: jest.fn(), remove: jest.fn() }
   return { service: new MaintenanceService(prisma as never, storage as never), prisma, storage }
 }
 
@@ -118,16 +118,28 @@ describe('MaintenanceService', () => {
     expect(prisma.maintenanceEvidence.update).not.toHaveBeenCalled()
   })
 
-  it('does not publish evidence or an audit event when malware scanning rejects it', async () => {
+  it('does not publish evidence or an audit event when bytes disagree with the declared type', async () => {
+    const { service, prisma, storage } = setup()
+    const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])
+    prisma.maintenanceRequest.findUnique.mockResolvedValue({ ...record, status: MaintenanceStatus.IN_PROGRESS })
+    prisma.maintenanceEvidence.findFirst.mockResolvedValue({ id: 'evidence', status: MaintenanceEvidenceStatus.PENDING, uploaderId: contractor.sub, kind: MaintenanceEvidenceKind.WORK, createdAt: new Date(), contentType: 'application/pdf', sizeBytes: png.length, objectKey: 'pending/maintenance/evidence' })
+    storage.download.mockResolvedValue(png)
+    await expect(service.completeEvidence('request', 'evidence', contractor)).rejects.toThrow(BadRequestException)
+    expect(storage.move).not.toHaveBeenCalled()
+    expect(prisma.maintenanceEvidence.update).not.toHaveBeenCalled()
+    expect(prisma.auditEvent.create).not.toHaveBeenCalled()
+  })
+
+  it('publishes valid work evidence and its audit event for the assigned contractor', async () => {
     const { service, prisma, storage } = setup()
     const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])
     prisma.maintenanceRequest.findUnique.mockResolvedValue({ ...record, status: MaintenanceStatus.IN_PROGRESS })
     prisma.maintenanceEvidence.findFirst.mockResolvedValue({ id: 'evidence', status: MaintenanceEvidenceStatus.PENDING, uploaderId: contractor.sub, kind: MaintenanceEvidenceKind.WORK, createdAt: new Date(), contentType: 'image/png', sizeBytes: png.length, objectKey: 'pending/maintenance/evidence' })
     storage.download.mockResolvedValue(png)
-    storage.scan.mockRejectedValue(new BadRequestException('Uploaded file failed malware scanning'))
-    await expect(service.completeEvidence('request', 'evidence', contractor)).rejects.toThrow(BadRequestException)
-    expect(storage.move).not.toHaveBeenCalled()
-    expect(prisma.maintenanceEvidence.update).not.toHaveBeenCalled()
-    expect(prisma.auditEvent.create).not.toHaveBeenCalled()
+    await service.completeEvidence('request', 'evidence', contractor)
+    expect(storage.move).toHaveBeenCalledWith('pending/maintenance/evidence', 'maintenance/request/evidence')
+    expect(prisma.maintenanceEvidence.update).toHaveBeenCalledWith({ where: { id: 'evidence' }, data: { objectKey: 'maintenance/request/evidence', status: MaintenanceEvidenceStatus.READY, completedAt: expect.any(Date) } })
+    expect(prisma.auditEvent.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ actorId: contractor.sub, action: 'MAINTENANCE_EVIDENCE_ADDED', entityId: 'request' }) }))
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(2)
   })
 })

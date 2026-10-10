@@ -27,7 +27,7 @@ function setup() {
     $transaction: jest.fn(),
   }
   prisma.$transaction.mockImplementation(async (work: (tx: unknown) => Promise<unknown>) => work(prisma))
-  const storage = { signUpload: jest.fn().mockResolvedValue('https://storage.example/upload'), download: jest.fn(), scan: jest.fn(), move: jest.fn(), signedDownload: jest.fn(), remove: jest.fn() }
+  const storage = { signUpload: jest.fn().mockResolvedValue('https://storage.example/upload'), download: jest.fn(), move: jest.fn(), signedDownload: jest.fn(), remove: jest.fn() }
   return { service: new InspectionsService(prisma as never, storage as never), prisma, storage }
 }
 
@@ -90,16 +90,28 @@ describe('InspectionsService', () => {
     expect(prisma.inspectionEvidence.update).not.toHaveBeenCalled()
   })
 
-  it('does not publish evidence or an audit event after a failed malware scan', async () => {
+  it('does not publish evidence or an audit event when bytes disagree with the declared type', async () => {
+    const { service, prisma, storage } = setup()
+    const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])
+    prisma.inspection.findUnique.mockResolvedValue({ ...record, status: InspectionStatus.IN_PROGRESS })
+    prisma.inspectionEvidence.findFirst.mockResolvedValue({ id: 'evidence', status: InspectionEvidenceStatus.PENDING, uploaderId: inspector.sub, createdAt: new Date(), contentType: 'application/pdf', sizeBytes: png.length, objectKey: 'pending/inspection/evidence' })
+    storage.download.mockResolvedValue(png)
+    await expect(service.completeEvidence('visit', 'evidence', inspector)).rejects.toThrow(BadRequestException)
+    expect(storage.move).not.toHaveBeenCalled()
+    expect(prisma.inspectionEvidence.update).not.toHaveBeenCalled()
+    expect(prisma.auditEvent.create).not.toHaveBeenCalled()
+  })
+
+  it('publishes valid evidence and its audit event for the assigned inspector', async () => {
     const { service, prisma, storage } = setup()
     const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])
     prisma.inspection.findUnique.mockResolvedValue({ ...record, status: InspectionStatus.IN_PROGRESS })
     prisma.inspectionEvidence.findFirst.mockResolvedValue({ id: 'evidence', status: InspectionEvidenceStatus.PENDING, uploaderId: inspector.sub, createdAt: new Date(), contentType: 'image/png', sizeBytes: png.length, objectKey: 'pending/inspection/evidence' })
     storage.download.mockResolvedValue(png)
-    storage.scan.mockRejectedValue(new BadRequestException('Uploaded file failed malware scanning'))
-    await expect(service.completeEvidence('visit', 'evidence', inspector)).rejects.toThrow(BadRequestException)
-    expect(storage.move).not.toHaveBeenCalled()
-    expect(prisma.inspectionEvidence.update).not.toHaveBeenCalled()
-    expect(prisma.auditEvent.create).not.toHaveBeenCalled()
+    await service.completeEvidence('visit', 'evidence', inspector)
+    expect(storage.move).toHaveBeenCalledWith('pending/inspection/evidence', 'inspections/visit/evidence')
+    expect(prisma.inspectionEvidence.update).toHaveBeenCalledWith({ where: { id: 'evidence' }, data: { objectKey: 'inspections/visit/evidence', status: InspectionEvidenceStatus.READY, completedAt: expect.any(Date) } })
+    expect(prisma.auditEvent.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ actorId: inspector.sub, action: 'INSPECTION_EVIDENCE_ADDED', entityId: 'visit' }) }))
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(2)
   })
 })

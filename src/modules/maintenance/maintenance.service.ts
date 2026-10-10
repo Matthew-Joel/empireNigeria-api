@@ -28,7 +28,14 @@ export class MaintenanceService {
     return user ? (user.profile ? `${user.profile.firstName} ${user.profile.lastName}`.trim() : user.email) : null
   }
 
-  private serialize(record: RecordWithDetails) {
+  private async quoteContractorNames(records: RecordWithDetails[]) {
+    const ids = [...new Set(records.flatMap((record) => record.quotes.map((quote) => quote.contractorId)).filter(Boolean))]
+    if (!ids.length) return new Map<string, string | null>()
+    const users = await this.prisma.user.findMany({ where: { id: { in: ids } }, select: { id: true, email: true, profile: { select: { firstName: true, lastName: true } } } })
+    return new Map(users.map((user) => [user.id, this.name(user)]))
+  }
+
+  private serialize(record: RecordWithDetails, contractorNames: Map<string, string | null>) {
     return {
       id: record.id,
       ownerId: record.property.ownerId,
@@ -49,7 +56,7 @@ export class MaintenanceService {
       closedAt: record.closedAt,
       updates: record.updates.map((update) => ({ id: update.id, status: update.status, note: update.note, authorName: this.name(update.author), createdAt: update.createdAt })),
       evidence: record.evidence.map((item) => ({ id: item.id, name: item.originalName, caption: item.caption, type: item.type, kind: item.kind, recordedAt: item.completedAt ?? item.createdAt, sizeBytes: item.sizeBytes })),
-      quotes: record.quotes.map((quote) => ({ id: quote.id, revision: quote.revision, contractorId: quote.contractorId, status: quote.status, amountNgn: quote.amountNgn, scope: quote.scope, expectedDurationDays: quote.expectedDurationDays, notes: quote.notes, submittedAt: quote.submittedAt, decidedAt: quote.decidedAt, decisionNote: quote.decisionNote })),
+      quotes: record.quotes.map((quote) => ({ id: quote.id, revision: quote.revision, contractorId: quote.contractorId, contractorName: contractorNames.get(quote.contractorId) ?? null, status: quote.status, amountNgn: quote.amountNgn, scope: quote.scope, expectedDurationDays: quote.expectedDurationDays, notes: quote.notes, submittedAt: quote.submittedAt, decidedAt: quote.decidedAt, decisionNote: quote.decisionNote })),
     }
   }
 
@@ -79,10 +86,14 @@ export class MaintenanceService {
       : actor.role === UserRole.CONTRACTOR ? { contractorId: actor.sub }
       : { id: '__none__' }
     const records = await this.prisma.maintenanceRequest.findMany({ where, include: maintenanceInclude, orderBy: { reportedAt: 'desc' } })
-    return records.map((record) => this.serialize(record))
+    const contractorNames = await this.quoteContractorNames(records)
+    return records.map((record) => this.serialize(record, contractorNames))
   }
 
-  async get(id: string, actor: Actor) { return this.serialize(await this.accessible(id, actor)) }
+  async get(id: string, actor: Actor) {
+    const record = await this.accessible(id, actor)
+    return this.serialize(record, await this.quoteContractorNames([record]))
+  }
 
   async create(dto: CreateMaintenanceDto, actor: Actor) {
     if (actor.role !== UserRole.OWNER) throw new ForbiddenException()
@@ -239,7 +250,6 @@ export class MaintenanceService {
       if (Date.now() - evidence.createdAt.getTime() > uploadLifetime) throw new BadRequestException('Evidence upload expired')
       const bytes = await this.storage.download(evidence.objectKey, evidence.sizeBytes)
       if (bytes.length !== evidence.sizeBytes || fileSignature(bytes) !== evidence.contentType) throw new BadRequestException('Evidence does not match its declared type or size')
-      await this.storage.scan(bytes)
       const readyKey = `maintenance/${id}/${evidence.id}`
       await this.storage.move(evidence.objectKey, readyKey)
       await tx.maintenanceEvidence.update({ where: { id: evidence.id }, data: { objectKey: readyKey, status: MaintenanceEvidenceStatus.READY, completedAt: new Date() } })

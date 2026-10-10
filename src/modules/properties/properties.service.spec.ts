@@ -15,7 +15,7 @@ function setup() {
     $transaction: jest.fn(),
   }
   prisma.$transaction.mockImplementation(async (work: (tx: unknown) => Promise<unknown>) => work(prisma))
-  const storage = { signUpload: jest.fn().mockResolvedValue('https://storage.example/upload'), download: jest.fn(), scan: jest.fn(), move: jest.fn(), signedDownload: jest.fn(), remove: jest.fn() }
+  const storage = { signUpload: jest.fn().mockResolvedValue('https://storage.example/upload'), download: jest.fn(), move: jest.fn(), signedDownload: jest.fn(), remove: jest.fn() }
   return { service: new PropertiesService(prisma as never, storage as never), prisma, storage }
 }
 
@@ -73,12 +73,23 @@ describe('PropertiesService', () => {
     expect(storage.download).not.toHaveBeenCalled()
   })
 
-  it('returns an already-ready file without rescanning or moving it again', async () => {
+  it('publishes valid uploaded bytes and makes the new photo the cover', async () => {
+    const { service, prisma, storage } = setup()
+    const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])
+    prisma.propertyFile.findFirst.mockResolvedValue({ id: 'file-id', propertyId: property.id, uploaderId: owner.sub, status: PropertyFileStatus.PENDING, objectKey: 'pending/key', contentType: 'image/png', sizeBytes: png.length, createdAt: new Date(), isCover: true })
+    storage.download.mockResolvedValue(png)
+    await expect(service.completeUpload(property.id, 'file-id', owner)).resolves.toEqual(property)
+    expect(storage.move).toHaveBeenCalledWith('pending/key', 'properties/property-id/file-id')
+    expect(prisma.propertyFile.updateMany).toHaveBeenCalledWith({ where: { propertyId: property.id, purpose: PropertyFilePurpose.PHOTO, status: PropertyFileStatus.READY }, data: { isCover: false } })
+    expect(prisma.propertyFile.update).toHaveBeenCalledWith({ where: { id: 'file-id' }, data: { objectKey: 'properties/property-id/file-id', status: PropertyFileStatus.READY, completedAt: expect.any(Date) } })
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(2)
+  })
+
+  it('returns an already-ready file without downloading or moving it again', async () => {
     const { service, prisma, storage } = setup()
     prisma.propertyFile.findFirst.mockResolvedValue({ id: 'file-id', propertyId: property.id, status: PropertyFileStatus.READY })
     await expect(service.completeUpload(property.id, 'file-id', owner)).resolves.toEqual(property)
     expect(storage.download).not.toHaveBeenCalled()
-    expect(storage.scan).not.toHaveBeenCalled()
     expect(storage.move).not.toHaveBeenCalled()
   })
 })

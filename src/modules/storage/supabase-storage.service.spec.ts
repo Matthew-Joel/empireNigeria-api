@@ -1,9 +1,6 @@
-import { BadRequestException, ServiceUnavailableException } from '@nestjs/common'
+import { BadRequestException } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
-import { scanWithClamd } from './file-scanner'
 import { SupabaseStorageService } from './supabase-storage.service'
-
-jest.mock('./file-scanner', () => ({ scanWithClamd: jest.fn() }))
 
 function service(legacy = false, settings: Record<string, string> = {}) {
   const values: Record<string, string> = { SUPABASE_URL: 'https://project.supabase.co', [legacy ? 'SUPABASE_SERVICE_ROLE_KEY' : 'SUPABASE_SECRET_KEY']: legacy ? 'legacy-key' : 'sb_secret_private-key', SUPABASE_STORAGE_BUCKET: 'property-files', ...settings }
@@ -11,7 +8,6 @@ function service(legacy = false, settings: Record<string, string> = {}) {
 }
 
 describe('SupabaseStorageService', () => {
-  beforeEach(() => jest.mocked(scanWithClamd).mockReset())
   afterEach(() => jest.restoreAllMocks())
 
   it('uses the private service key only for signing and returns a token URL', async () => {
@@ -66,46 +62,5 @@ describe('SupabaseStorageService', () => {
     const stream = new ReadableStream<Uint8Array>({ start(controller) { controller.error(new Error('provider-private-detail')) } })
     jest.spyOn(global, 'fetch').mockResolvedValue(new Response(stream))
     await expect(service().download('pending/test', 10)).rejects.toThrow('Could not read uploaded file')
-  })
-
-  it.each<Record<string, string>>([
-    { NODE_ENV: 'production' },
-    { FILE_SCAN_REQUIRED: 'true' },
-    { NODE_ENV: 'production', CLAMAV_HOST: '   ' },
-  ])('fails closed when required scanning has no configured host (%j)', async (settings) => {
-    await expect(service(false, settings).scan(Buffer.from('test'))).rejects.toThrow('File scanner is not configured')
-    expect(scanWithClamd).not.toHaveBeenCalled()
-  })
-
-  it('allows explicitly optional development scanning without a host', async () => {
-    await expect(service(false, { NODE_ENV: 'development' }).scan(Buffer.from('test'))).resolves.toBeUndefined()
-    expect(scanWithClamd).not.toHaveBeenCalled()
-  })
-
-  it('accepts a clean upload only after receiving the exact clean stream result', async () => {
-    jest.mocked(scanWithClamd).mockResolvedValue('stream: OK')
-    const bytes = Buffer.from('test')
-    await expect(service(false, { CLAMAV_HOST: 'scanner' }).scan(bytes)).resolves.toBeUndefined()
-    expect(scanWithClamd).toHaveBeenCalledWith(bytes, 'scanner', 3310)
-  })
-
-  it('rejects malware rather than marking the upload ready', async () => {
-    jest.mocked(scanWithClamd).mockResolvedValue('stream: Eicar-Signature FOUND')
-    await expect(service(false, { CLAMAV_HOST: 'scanner' }).scan(Buffer.from('test'))).rejects.toThrow(BadRequestException)
-  })
-
-  it.each(['stream: size limit exceeded ERROR', 'daemon: OK', 'stream: ERROR unexpected OK', ''])('fails closed for an unverified scanner result %j', async (reply) => {
-    jest.mocked(scanWithClamd).mockResolvedValue(reply)
-    await expect(service(false, { CLAMAV_HOST: 'scanner' }).scan(Buffer.from('test'))).rejects.toThrow('File scanner could not verify this upload')
-  })
-
-  it('fails closed when the scanner cannot be reached', async () => {
-    jest.mocked(scanWithClamd).mockRejectedValue(new Error('ECONNREFUSED provider-private-detail'))
-    await expect(service(false, { CLAMAV_HOST: 'scanner' }).scan(Buffer.from('test'))).rejects.toThrow('File scanner is unavailable')
-  })
-
-  it.each(['0', '65536', '1.5', 'invalid'])('rejects invalid scanner port %s', async (port) => {
-    await expect(service(false, { CLAMAV_HOST: 'scanner', CLAMAV_PORT: port }).scan(Buffer.from('test'))).rejects.toThrow(ServiceUnavailableException)
-    expect(scanWithClamd).not.toHaveBeenCalled()
   })
 })

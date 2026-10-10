@@ -5,8 +5,6 @@ const assert = require('node:assert/strict')
 const { randomUUID } = require('node:crypto')
 const { NestFactory } = require('@nestjs/core')
 const { JwtService } = require('@nestjs/jwt')
-const { ConfigService } = require('@nestjs/config')
-const { createScannerFixture } = require('./test-support/scanner-daemon.cjs')
 const { AppModule } = require('../dist/app.module')
 const { PrismaService } = require('../dist/database/prisma.service')
 const { SupabaseStorageService } = require('../dist/modules/storage/supabase-storage.service')
@@ -17,18 +15,10 @@ const pdf = Buffer.from('%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntraile
 
 async function main() {
   const profileOnly = process.argv.includes('--profile-only')
-  const scanner = process.argv.includes('--scanner-integration') ? await createScannerFixture() : null
   const app = await NestFactory.create(AppModule, { logger: ['error'] })
   const prisma = app.get(PrismaService)
   const storage = app.get(SupabaseStorageService)
   const jwt = app.get(JwtService)
-  const config = app.get(ConfigService)
-  const originalMode = config.get('NODE_ENV')
-  if (scanner) {
-    config.set('FILE_SCAN_REQUIRED', 'true')
-    config.set('CLAMAV_HOST', scanner.host)
-    config.set('CLAMAV_PORT', scanner.port)
-  }
   const run = randomUUID().slice(0, 12)
   const userIds = []
   const propertyKeys = new Set()
@@ -139,28 +129,6 @@ async function main() {
     }
     const property = await request(`/properties/${propertyId}`, 'GET', users.owner)
     assert.equal(property.body.files.length, 2, 'Property should expose ready files')
-    if (scanner) {
-      for (const mode of ['missing', 'production-missing', 'infected', 'error', 'disconnect']) {
-        const started = await pendingPhoto(`scanner-${mode}.png`)
-        await upload(started, png, `scanner-${mode}.png`, 'image/png')
-        scanner.mode = mode
-        if (mode === 'missing' || mode === 'production-missing') config.set('CLAMAV_HOST', '')
-        if (mode === 'production-missing') { config.set('NODE_ENV', 'production'); config.set('FILE_SCAN_REQUIRED', 'false') }
-        const rejected = await request(`${filesPath}/${started.body.id}/complete`, 'POST', users.owner)
-        assert.equal(rejected.status, mode === 'infected' ? 400 : 503, `Scanner ${mode} must reject publication: ${JSON.stringify(rejected.body)}`)
-        const pending = await prisma.propertyFile.findUnique({ where: { id: started.body.id } })
-        assert.equal(pending.status, 'PENDING', 'A failed scan never marks an upload ready')
-        assert.ok(pending.objectKey.startsWith('pending/'), 'Failed scan never moves bytes to a final key')
-        assert.equal((await request(`${filesPath}/${started.body.id}/url`, 'GET', users.owner)).status, 404, 'Failed scans remain private')
-        scanner.mode = 'clean'
-        config.set('NODE_ENV', originalMode)
-        config.set('FILE_SCAN_REQUIRED', 'true')
-        config.set('CLAMAV_HOST', scanner.host)
-        assert.equal((await request(`${filesPath}/${started.body.id}/complete`, 'POST', users.owner)).status, 201, 'A clean retry can complete the same pending upload')
-        assert.equal((await request(`${filesPath}/${started.body.id}`, 'DELETE', users.owner)).status, 200, 'Remove scanner fixture')
-      }
-      console.log('PASS scanner protocol integration: infected, missing, production-required, error, disconnect, privacy, and clean retry (controlled daemon, not an antivirus engine)')
-    }
     const coverUploads = await Promise.all([pendingPhoto('cover-a.png', png.length, true), pendingPhoto('cover-b.png', png.length, true)])
     await Promise.all(coverUploads.map((started) => upload(started, png, 'cover.png', 'image/png')))
     const coverCompletions = await Promise.all(coverUploads.map((started) => request(`${filesPath}/${started.body.id}/complete`, 'POST', users.owner)))
@@ -203,7 +171,6 @@ async function main() {
       if (userIds.length) await prisma.user.deleteMany({ where: { id: { in: userIds } } })
     } finally {
       await app.close()
-      if (scanner) await scanner.close()
     }
     if (cleanupErrors.length) throw new Error(`Storage cleanup had ${cleanupErrors.length} error(s); inspect run ${run}.`)
   }

@@ -14,7 +14,7 @@ function setup() {
     $transaction: transaction,
   }
   transaction.mockImplementation(async (fn: (tx: typeof prisma) => Promise<unknown>) => fn(prisma))
-  const storage = { profileBucket: 'profile-images', signUpload: jest.fn().mockResolvedValue('https://example/upload'), download: jest.fn().mockResolvedValue(png), scan: jest.fn(), move: jest.fn().mockResolvedValue(undefined), signedDownload: jest.fn().mockResolvedValue('https://example/image'), remove: jest.fn().mockResolvedValue(undefined) }
+  const storage = { profileBucket: 'profile-images', signUpload: jest.fn().mockResolvedValue('https://example/upload'), download: jest.fn().mockResolvedValue(png), move: jest.fn().mockResolvedValue(undefined), signedDownload: jest.fn().mockResolvedValue('https://example/image'), remove: jest.fn().mockResolvedValue(undefined) }
   return { service: new ProfileImageService(prisma as never, storage as never), prisma, storage, record }
 }
 
@@ -44,10 +44,10 @@ describe('ProfileImageService', () => {
     expect(prisma.$queryRaw).toHaveBeenCalledTimes(2)
   })
 
-  it('preserves the previous image and pending record when scanning rejects the upload', async () => {
+  it('preserves the previous image and pending record when the file signature is invalid', async () => {
     const { service, prisma, storage } = setup()
-    storage.scan.mockRejectedValue(new BadRequestException('Uploaded file failed malware scanning'))
-    await expect(service.complete('user', 'upload-id')).rejects.toThrow('Uploaded file failed malware scanning')
+    storage.download.mockResolvedValue(Buffer.alloc(png.length))
+    await expect(service.complete('user', 'upload-id')).rejects.toThrow('Uploaded image does not match its declared type or size')
     expect(storage.move).not.toHaveBeenCalled()
     expect(prisma.userProfile.update).not.toHaveBeenCalled()
     expect(prisma.profileImageUpload.delete).not.toHaveBeenCalled()

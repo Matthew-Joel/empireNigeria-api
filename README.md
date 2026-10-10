@@ -11,6 +11,8 @@ NestJS API using hosted PostgreSQL, Prisma, and Resend.
 
 Docker is optional; the normal configuration uses hosted PostgreSQL. Do not use a database reset command against the hosted database.
 
+`NODE_ENV=development` identifies a local/development environment; use `NODE_ENV=production` on the deployed backend. The value does not start watch mode by itself: `npm run start:dev` does that. With valid Resend settings, emails are sent in either environment. Development can start without an email API key, but no email is delivered in that case; production startup requires both `RESEND_API_KEY` and `RESEND_FROM_EMAIL`.
+
 Administrator accounts are created internally. The optional existing seed script creates only the administrator and must be given a private `SEED_PASSWORD`; it is not required to run migrations and is not a way to onboard staff. Owners and guests register publicly. Property managers, inspectors, and contractors receive administrator-created invitations.
 
 ## Account endpoints
@@ -52,7 +54,7 @@ All paths below are under `/api/v1`.
 | GET/POST/PATCH | /tasks, /tasks/:id | Managed-property tasks and status changes |
 | GET/PATCH | /occupancy, /occupancy/:propertyId | Scoped occupancy records and change history |
 | GET/POST | /financials, /financials/expenses | Scoped financial summary and actual expense entries |
-| GET | /reports | Scoped portfolio, inspection, maintenance, booking, and expense counts |
+| GET | /reports | Scoped current portfolio snapshot and monthly activity; optional inclusive `from`/`to` dates |
 | GET/POST | /properties | List accessible properties or submit an owner property |
 | GET/PATCH | /properties/:id | Read or update a property, subject to ownership and role checks |
 | PATCH | /properties/:id/review | Administrator review status and note |
@@ -101,6 +103,8 @@ The frontend uses the API for all account roles, with no demo authentication fal
 
 See [the technical acceptance report](docs/technical-acceptance.md) for actual results and pending external checks.
 
+See [reporting semantics](docs/reporting.md) for date ranges, role scope, event dates, and the distinction between reservation value and received income. Monthly reporting and administrator creation-cohort comparisons use existing tables and require no new migration.
+
 - `npm test -- --watch=false`: mocked unit/regression tests.
 - `npx tsc --noEmit -p tsconfig.build.json`: TypeScript validation.
 - `npm run build`: production build; entry point is `dist/main.js`.
@@ -111,7 +115,8 @@ See [the technical acceptance report](docs/technical-acceptance.md) for actual r
 - `node --env-file=.env scripts/maintenance-smoke.cjs`: temporary maintenance, property, user, and evidence fixtures; exercises quote rejection, revision, owner approval, contractor completion, admin closeout, audit, and analytics, then removes fixtures; no email is sent.
 - `node --env-file=.env scripts/stay-operations-smoke.cjs`: temporary Stay, booking, occupancy, task, expense, and user fixtures; exercises publication, overlap prevention, cancellations, reports, audit, and cleanup without payment or email.
 - `node --env-file=.env scripts/cleanup-smoke.cjs`: isolated expired-upload fixtures; verifies preview, bounded deletion, and preservation of recent, ready, and unrelated uploads.
-- `node --env-file=.env scripts/acceptance-check.cjs --scanner-protocol-fixture`: runs live workflow checks sequentially with a controlled ClamD protocol fixture. This verifies scanner integration and failure handling; production antivirus activation needs a real ClamAV daemon. Use `--only=storage,cleanup` to select checks. Include authentication with an authorized `--email=YOUR_APPROVED_TEST_MAILBOX`, or use `--only=auth --email-fixture` for captured messages without Resend delivery.
+- `node --env-file=.env scripts/reporting-smoke.cjs`: bounded read-only hosted reporting SQL and role-scope checks; creates no fixtures and sends no email.
+- `node --env-file=.env scripts/acceptance-check.cjs`: runs live workflow checks sequentially. Use `--only=storage,cleanup` to select checks. Include authentication with an authorized `--email=YOUR_APPROVED_TEST_MAILBOX`, or use `--only=auth --email-fixture` for captured messages without Resend delivery.
 
 The live test must only be run with permission to send email to that mailbox. It creates run-scoped fixture accounts, sends all test messages to the approved mailbox, exercises the HTTP endpoints, and deletes its fixtures in a finally block. It never prints passwords, codes, or tokens. A successful Resend API response confirms acceptance by the provider, not arrival in the inbox.
 
@@ -127,7 +132,7 @@ Browser account tests in the frontend use explicit API fixtures; they are separa
 
 ## File storage
 
-Property files and profile images use Supabase Storage. Set `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `SUPABASE_STORAGE_BUCKET`, and `SUPABASE_PROFILE_BUCKET` on the backend, then run `npm run storage:setup` to create or verify two private buckets with a 5 MB per-file limit. Existing projects may use the legacy `SUPABASE_SERVICE_ROLE_KEY` variable instead. Keep either privileged key off the frontend. The browser uploads directly to Storage; the backend verifies size, file signature, and a configured scan before making files visible. Production requires a reachable ClamAV scanner. See [the file-storage design](docs/file-storage.md) for scanner configuration, cleanup, and signed access behavior.
+Property files and profile images use Supabase Storage. Set `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `SUPABASE_STORAGE_BUCKET`, and `SUPABASE_PROFILE_BUCKET` on the backend, then run `npm run storage:setup` to create or verify two private buckets with a 5 MB per-file limit. Existing projects may use the legacy `SUPABASE_SERVICE_ROLE_KEY` variable instead. Keep either privileged key off the frontend. The browser uploads directly to Storage; the backend verifies actual size and file signature before making files visible. The same checks apply in development and production. See [the file-storage design](docs/file-storage.md) for validation, cleanup, and signed access behavior.
 
 Inspection evidence uses the existing private property-files bucket, with the same 5 MB limit and signature verification. Owners and assigned property managers can read evidence only after the inspector submits the report. The database migration `20261006020000_inspections` must be deployed before using inspection endpoints.
 
