@@ -9,6 +9,15 @@ import { fileSignature } from '../storage/file-signature'
 
 type Actor = AuthenticatedRequest['user']
 
+// Allowed admin review moves. A property returns to SUBMITTED only when its owner edits it.
+const REVIEW_TRANSITIONS: Record<PropertyStatus, PropertyStatus[]> = {
+  [PropertyStatus.SUBMITTED]: [PropertyStatus.UNDER_REVIEW, PropertyStatus.CHANGES_REQUESTED],
+  [PropertyStatus.UNDER_REVIEW]: [PropertyStatus.INSPECTION_PENDING, PropertyStatus.APPROVED, PropertyStatus.CHANGES_REQUESTED],
+  [PropertyStatus.INSPECTION_PENDING]: [PropertyStatus.APPROVED, PropertyStatus.CHANGES_REQUESTED],
+  [PropertyStatus.CHANGES_REQUESTED]: [],
+  [PropertyStatus.APPROVED]: [PropertyStatus.CHANGES_REQUESTED],
+}
+
 const propertyInclude = {
   owner: { select: { id: true, email: true, profile: { select: { firstName: true, lastName: true } } } },
   manager: { select: { id: true, email: true, profile: { select: { firstName: true, lastName: true } } } },
@@ -59,8 +68,9 @@ export class PropertiesService {
 
   async review(id: string, dto: ReviewPropertyDto, actor: Actor) {
     if (actor.role !== UserRole.ADMIN) throw new ForbiddenException()
-    await this.accessible(id, actor)
+    const existing = await this.accessible(id, actor)
     if (dto.status === PropertyStatus.SUBMITTED) throw new BadRequestException('Invalid review status')
+    if (!REVIEW_TRANSITIONS[existing.status].includes(dto.status)) throw new BadRequestException(`Cannot move a property from ${existing.status.toLowerCase().replaceAll('_', ' ')} to ${dto.status.toLowerCase().replaceAll('_', ' ')}`)
     const property = await this.prisma.property.update({ where: { id }, data: { status: dto.status, reviewNote: dto.reviewNote?.trim() || null }, include: propertyInclude })
     await this.prisma.auditEvent.create({ data: { actorId: actor.sub, actorRole: actor.role, action: 'PROPERTY_REVIEWED', entityType: 'PROPERTY', entityId: id, summary: `Administrator moved property to ${dto.status.toLowerCase().replaceAll('_', ' ')}` } })
     return property

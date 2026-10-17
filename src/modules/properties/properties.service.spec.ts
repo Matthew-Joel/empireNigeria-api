@@ -28,6 +28,18 @@ describe('PropertiesService', () => {
     expect(storage.signedDownload).toHaveBeenCalledWith('properties/property-id/document', false)
     await expect(service.fileUrl(property.id, 'file-id', owner, 'invalid')).rejects.toBeInstanceOf(BadRequestException)
   })
+  it('only allows valid admin review transitions', async () => {
+    const admin = { sub: 'admin-id', email: 'admin@example.com', role: UserRole.ADMIN }
+    const { service, prisma } = setup()
+    prisma.property.update.mockResolvedValue({ ...property, status: PropertyStatus.UNDER_REVIEW })
+    Object.assign(prisma, { auditEvent: { create: jest.fn() } })
+    await expect(service.review(property.id, { status: PropertyStatus.APPROVED } as never, admin)).rejects.toBeInstanceOf(BadRequestException)
+    await expect(service.review(property.id, { status: PropertyStatus.UNDER_REVIEW } as never, admin)).resolves.toBeDefined()
+    prisma.property.findUnique.mockResolvedValue({ ...property, status: PropertyStatus.APPROVED })
+    await expect(service.review(property.id, { status: PropertyStatus.UNDER_REVIEW } as never, admin)).rejects.toBeInstanceOf(BadRequestException)
+    await expect(service.review(property.id, { status: PropertyStatus.CHANGES_REQUESTED } as never, admin)).resolves.toBeDefined()
+  })
+
   it('scopes the list to the owner or assigned manager', async () => {
     const { service, prisma } = setup()
     await service.list(owner)

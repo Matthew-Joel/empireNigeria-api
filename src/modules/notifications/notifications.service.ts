@@ -10,6 +10,7 @@ export interface SendEmailInput {
   subject: string
   html: string
   text?: string
+  replyTo?: string
 }
 
 @Injectable()
@@ -49,6 +50,7 @@ export class NotificationsService {
       subject: input.subject,
       html: input.html,
       text: input.text,
+      replyTo: input.replyTo,
     })
 
     if (error) {
