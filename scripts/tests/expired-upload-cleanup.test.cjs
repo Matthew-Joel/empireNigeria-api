@@ -7,14 +7,17 @@ const old = new Date('2026-10-07T08:00:00.000Z')
 const delegates = ['propertyFile', 'inspectionEvidence', 'maintenanceEvidence', 'profileImageUpload']
 
 function matches(row, where) {
-  return (!where.id || row.id === where.id)
+  return (!where.id || (typeof where.id === 'string' ? row.id === where.id : row.id > where.id.gt))
     && (!where.status || row.status === where.status)
     && (!where.objectKey || (typeof where.objectKey === 'string' ? row.objectKey === where.objectKey : row.objectKey.startsWith(where.objectKey.startsWith)))
+    && (!(where.createdAt instanceof Date) || row.createdAt.getTime() === where.createdAt.getTime())
     && (!where.createdAt?.lt || row.createdAt < where.createdAt.lt)
-    && (!where.OR || row.createdAt > where.OR[0].createdAt.gt || (row.createdAt.getTime() === where.OR[1].createdAt.getTime() && row.id > where.OR[1].id.gt))
+    && (!where.createdAt?.gt || row.createdAt > where.createdAt.gt)
+    && (!where.OR || where.OR.some((condition) => matches(row, condition)))
+    && (!where.AND || where.AND.every((condition) => matches(row, condition)))
 }
 
-function harness(initial, { onLock, onRemove } = {}) {
+function harness(initial, { onLock, onRemove, onDelete } = {}) {
   const rows = Object.fromEntries(delegates.map((delegate) => [delegate, (initial[delegate] || []).map((row) => ({ ...row }))]))
   const removed = []
   const locks = []
@@ -26,17 +29,23 @@ function harness(initial, { onLock, onRemove } = {}) {
       deleteMany: async ({ where }) => {
         const before = rows[delegate].length
         rows[delegate] = rows[delegate].filter((row) => !matches(row, where))
+        if (onDelete) await onDelete(rows, delegate)
         return { count: before - rows[delegate].length }
       },
     }
   }
   prisma.$queryRawUnsafe = async (sql, id) => { locks.push({ sql, id }); if (onLock) await onLock(rows, id); return [{ id }] }
-  prisma.$transaction = async (callback, options) => { assert.deepEqual(options, { maxWait: 5000, timeout: 90_000 }); return callback(prisma) }
+  prisma.$transaction = async (callback, options) => {
+    assert.deepEqual(options, { maxWait: 5000, timeout: 90_000 })
+    const before = Object.fromEntries(delegates.map((delegate) => [delegate, rows[delegate].map((row) => ({ ...row }))]))
+    try { return await callback(prisma) }
+    catch (error) { for (const delegate of delegates) rows[delegate] = before[delegate]; throw error }
+  }
   const storage = { propertyBucket: 'property-files', profileBucket: 'profile-images', remove: async (key, bucket) => { if (onRemove) await onRemove(key); removed.push({ key, bucket }) } }
   return { prisma, storage, rows, removed, locks }
 }
 
-const pending = (id, additions = {}) => ({ id, objectKey: `pending/fixture/${id}`, status: 'PENDING', createdAt: old, ...additions })
+const pending = (id, additions = {}) => ({ id, propertyId: 'fixture', objectKey: `pending/fixture/${id}`, status: 'PENDING', createdAt: old, ...additions })
 
 test('scope and batch arguments reject dangerous/invalid values', () => {
   for (const args of [['--prefix', 'properties/fixture/'], ['--prefix', 'pending/'], ['--prefix', 'pending/../fixture/'], ['--prefix', 'pending/fixture/*/'], ['--prefix', 'pending/fixture/%/'], ['--prefix', 'pending/fixture_/'], ['--batch-size', '0'], ['--batch-size', '1001'], ['--max-batches', '101'], ['--dry-run', '--dry-run'], ['--unknown']]) assert.throws(() => parseCleanupOptions(args))
@@ -102,4 +111,98 @@ test('deterministic cursor batching respects per-kind bounds then safely resumes
   assert.equal(second.totals.removed, 1)
   const third = await cleanupExpiredUploads({ ...fixture, now, options })
   assert.equal(third.totals.candidates, 0)
+})
+
+test('expired property uploads remove pending and possible moved paths before their metadata', async () => {
+  const fixture = harness({ propertyFile: [pending('moved')] })
+  const summary = await cleanupExpiredUploads({ ...fixture, now })
+  assert.equal(summary.totals.removed, 1, 'Count one metadata record rather than two possible object paths')
+  assert.deepEqual(fixture.removed, [
+    { key: 'pending/fixture/moved', bucket: 'property-files' },
+    { key: 'properties/fixture/moved', bucket: 'property-files' },
+  ])
+  assert.equal(fixture.rows.propertyFile.length, 0)
+})
+
+test('global cleanup retries recent deletion tombstones at final or pending paths without touching READY files', async () => {
+  const fixture = harness({ propertyFile: [
+    pending('final', { status: 'DELETING', objectKey: 'properties/fixture/final', createdAt: now }),
+    pending('temporary', { status: 'DELETING', createdAt: now }),
+    pending('keep', { status: 'READY', objectKey: 'properties/fixture/keep' }),
+  ] })
+  const summary = await cleanupExpiredUploads({ ...fixture, now })
+  assert.equal(summary.totals.removed, 2)
+  assert.deepEqual(fixture.removed.map(({ key }) => key), ['properties/fixture/final', 'pending/fixture/temporary', 'properties/fixture/temporary'])
+  assert.deepEqual(fixture.rows.propertyFile.map(({ id }) => id), ['keep'])
+})
+
+test('scoped cleanup excludes deletion tombstones and removes only the selected property candidate paths', async () => {
+  const fixture = harness({ propertyFile: [
+    pending('selected'),
+    pending('tombstone', { status: 'DELETING', objectKey: 'properties/fixture/tombstone' }),
+    pending('other', { propertyId: 'other', objectKey: 'pending/other/other' }),
+  ] })
+  const summary = await cleanupExpiredUploads({ ...fixture, now, options: parseCleanupOptions(['--prefix', 'pending/fixture/']) })
+  assert.equal(summary.totals.removed, 1)
+  assert.deepEqual(fixture.removed.map(({ key }) => key), ['pending/fixture/selected', 'properties/fixture/selected'])
+  assert.deepEqual(fixture.rows.propertyFile.map(({ id }) => id), ['tombstone', 'other'])
+})
+
+test('partial Storage failure retains a tombstone for an idempotent retry', async () => {
+  let fail = true
+  const fixture = harness({ propertyFile: [pending('retry', { status: 'DELETING' })] }, { onRemove: async (key) => {
+    if (fail && key.startsWith('properties/')) throw new Error('Storage temporarily unavailable')
+  } })
+  const failed = await cleanupExpiredUploads({ ...fixture, now })
+  assert.equal(failed.totals.failed, 1)
+  assert.equal(failed.totals.removed, 0)
+  assert.equal(fixture.rows.propertyFile[0].status, 'DELETING')
+  fail = false
+  const retried = await cleanupExpiredUploads({ ...fixture, now })
+  assert.equal(retried.totals.removed, 1)
+  assert.equal(fixture.rows.propertyFile.length, 0)
+})
+
+test('database failure after Storage removal rolls back metadata and safely retries the tombstone', async () => {
+  let fail = true
+  const fixture = harness({ propertyFile: [pending('retry', { status: 'DELETING', objectKey: 'properties/fixture/retry' })] }, { onDelete: async () => {
+    if (fail) throw new Error('Database commit failed')
+  } })
+  const failed = await cleanupExpiredUploads({ ...fixture, now })
+  assert.equal(failed.totals.failed, 1)
+  assert.equal(failed.totals.removed, 0)
+  assert.equal(fixture.rows.propertyFile[0].status, 'DELETING', 'A failed deletion never revives usable READY evidence')
+  fail = false
+  const retried = await cleanupExpiredUploads({ ...fixture, now })
+  assert.equal(retried.totals.removed, 1)
+  assert.equal(fixture.rows.propertyFile.length, 0)
+})
+
+test('property metadata cannot broaden cleanup to a different final path', async () => {
+  const fixture = harness({ propertyFile: [
+    pending('wrong-parent', { objectKey: 'pending/fixture/../wrong-parent' }),
+    pending('wrong-final', { status: 'DELETING', objectKey: 'properties/other/wrong-final' }),
+  ] })
+  const summary = await cleanupExpiredUploads({ ...fixture, now })
+  assert.equal(summary.totals.skipped, 2)
+  assert.equal(summary.totals.removed, 0)
+  assert.equal(fixture.removed.length, 0)
+})
+
+test('scoped legacy pending folders keep their tracked path and exact row-derived final path', async () => {
+  const fixture = harness({ propertyFile: [pending('legacy', { objectKey: 'pending/cleanup-smoke-run/property-0.png' })] })
+  const summary = await cleanupExpiredUploads({ ...fixture, now, options: parseCleanupOptions(['--prefix', 'pending/cleanup-smoke-run/']) })
+  assert.equal(summary.totals.removed, 1)
+  assert.deepEqual(fixture.removed.map(({ key }) => key), ['pending/cleanup-smoke-run/property-0.png', 'properties/fixture/legacy'])
+})
+
+test('mixed pending uploads and recent tombstones keep eligibility intact across bounded cursor batches', async () => {
+  const fixture = harness({ propertyFile: [
+    pending('a'), pending('b'), pending('c', { status: 'DELETING', objectKey: 'properties/fixture/c', createdAt: now }),
+    pending('ready', { status: 'READY' }), pending('recent', { createdAt: now }),
+  ] })
+  const summary = await cleanupExpiredUploads({ ...fixture, now, options: parseCleanupOptions(['--batch-size', '1', '--max-batches', '10']) })
+  assert.equal(summary.totals.removed, 3)
+  assert.equal(summary.totals.candidates, 3)
+  assert.deepEqual(fixture.rows.propertyFile.map(({ id }) => id), ['ready', 'recent'])
 })

@@ -1,5 +1,5 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common'
-import { BookingStatus, MaintenanceQuoteStatus, Prisma, UserRole } from '@prisma/client'
+import { BookingStatus, MaintenanceQuoteStatus, Prisma, PropertyStatus, UserRole } from '@prisma/client'
 import { AuthenticatedRequest } from '../../common/types/request-with-user'
 import { PrismaService } from '../../database/prisma.service'
 import { CreateExpenseDto } from './dto/expense.dto'
@@ -9,7 +9,7 @@ type Actor = AuthenticatedRequest['user']
 export class FinancialsService {
   constructor(private readonly prisma: PrismaService) {}
   private where(actor: Actor): Prisma.PropertyWhereInput {
-    return actor.role === UserRole.ADMIN ? {} : actor.role === UserRole.OWNER ? { ownerId: actor.sub } : { managerId: actor.sub }
+    return { status: { not: PropertyStatus.DRAFT }, ...(actor.role === UserRole.ADMIN ? {} : actor.role === UserRole.OWNER ? { ownerId: actor.sub } : { managerId: actor.sub }) }
   }
   async summary(actor: Actor) {
     const propertyWhere = this.where(actor)

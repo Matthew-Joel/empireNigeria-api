@@ -1,5 +1,5 @@
 import { IsBoolean, IsDateString, IsEnum, IsIn, IsInt, IsOptional, IsString, Max, MaxLength, Min, MinLength, ValidateIf, IsUUID } from 'class-validator'
-import { PropertyFilePurpose, PropertyOccupancy, PropertyStatus } from '@prisma/client'
+import { OwnershipDocumentType, PropertyFilePurpose, PropertyOccupancy, PropertyStatus } from '@prisma/client'
 
 const propertyTypes = ['Detached house', 'Apartment', 'Duplex', 'Terrace'] as const
 
@@ -33,6 +33,7 @@ export class AssignManagerDto {
 
 export class StartPropertyUploadDto {
   @IsEnum(PropertyFilePurpose) purpose!: PropertyFilePurpose
+  @IsOptional() @IsEnum(OwnershipDocumentType) ownershipDocumentType?: OwnershipDocumentType
   @IsString() @MinLength(1) @MaxLength(255) fileName!: string
   @IsString() @MaxLength(100) contentType!: string
   @IsInt() @Min(1) @Max(5_000_000) sizeBytes!: number

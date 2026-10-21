@@ -1,6 +1,27 @@
 # Technical acceptance
 
-## Current verification — 10 October 2026
+## Current ownership verification - 21 October 2026
+
+New owner-created properties now remain drafts until at least one categorized ownership document completes upload and the owner explicitly submits the property. PDF, JPEG, and PNG are supported up to 5,000,000 bytes per file. Existing property statuses and uncategorized attachments are preserved. See [ownership submission](property-ownership.md) for the API contract, folder responsibilities, privacy, retries, and rollout.
+
+| Check | Actual result |
+| --- | --- |
+| Workspace access | Temporary create/read/delete probes passed in both roots; both Git statuses were clean before edits. |
+| Prisma client | Generated successfully for the ownership schema. |
+| Hosted migration | `20261021090000_required_ownership_proof` deployed successfully; a separate status check confirmed all 12 migrations applied and the schema up to date. No reset or user seed was run. |
+| Frontend production build | Passed, exit 0, including the final loaded-draft resume fix; 2,666 modules. Main JS 757.73 kB / 209.72 kB gzip. The existing >500 kB warning remains nonfatal. |
+| Frontend lint | Passed, exit 0. |
+| Frontend regressions | Full suite: 9 files / 79 tests passed. After the last resume changes, the focused submission suite passed all 8 tests. |
+| Backend full regressions | 20 suites / 150 tests passed, exit 0. A live hosted check subsequently identified the default 5-second metadata transaction timeout; the final affected-suite verification also passed below. |
+| Cleanup, scheduler, upload-helper tests | All 18 passed: 15 cleanup tests plus 1 scheduler and 2 ownership fixture tests. |
+| Final backend timeout verification | Final build passed, exit 0, and both affected property suites passed all 33 tests after the fix. Metadata transactions now have a bounded 20-second timeout and 5-second wait; Storage completion retains its separate 90-second timeout. |
+| Hosted ownership flow | Final rerun passed, exit 0, using the locally built API with hosted Neon and Supabase: required private PDF upload, category persistence, draft submission, review-safe retries, last-proof protection, owner/manager scope, admin overview/review, assignment, and approved-property edit permissions. Signed reads succeeded and anonymous public reads were rejected. The first failed connection attempt and the review-timeout failure are not counted as passes; bounded connection and transaction timeouts resolved the final run. |
+| Hosted fixture cleanup | Passed in the final run: tracked pending/final Storage removals succeeded; database counts confirmed its temporary property and all three test accounts were absent. Cleanup also completed after the earlier review-timeout failure. No permanent role seeds were created. |
+| Browser and deployed-site acceptance | Not run. Browser review remains with the project owner. The migration is deployed; publishing the updated API/frontend remains a separate deployment step. |
+
+No live email was sent. Operational fixture accounts are temporary and are removed by their test harness; they are not role seeds. Payment and scanner behavior were not changed.
+
+## Historical dashboard verification - 10 October 2026
 
 The interrupted work was resumed after confirming both project folders support temporary file creation/read/deletion and inspecting their Git statuses. Existing edits were preserved. Scanner code, tests, configuration, service calls, deployment container, and protocol fixture deletions persisted. The only remaining mention is the dated historical note below; scanning is not a runtime requirement in either development or production.
 

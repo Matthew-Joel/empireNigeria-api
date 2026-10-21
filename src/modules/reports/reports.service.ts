@@ -15,7 +15,7 @@ export class ReportsService {
   async summary(actor: Actor, dates: ReportDates = {}) {
     if (![UserRole.ADMIN, UserRole.OWNER, UserRole.PROPERTY_MANAGER].some((role) => role === actor.role)) throw new ForbiddenException('Reports are not available for this role')
     const range = reportingPeriod(dates)
-    const property: Prisma.PropertyWhereInput = actor.role === UserRole.ADMIN ? {} : actor.role === UserRole.OWNER ? { ownerId: actor.sub } : { managerId: actor.sub }
+    const property: Prisma.PropertyWhereInput = { status: { not: PropertyStatus.DRAFT }, ...(actor.role === UserRole.ADMIN ? {} : actor.role === UserRole.OWNER ? { ownerId: actor.sub } : { managerId: actor.sub }) }
     const [totalProperties, approvedProperties, occupiedProperties, shortLetProperties, openMaintenance, completedMaintenance, inspectionsOpen, inspectionsReported, bookingRequests, confirmedBookings, openTasks, expenses, activity] = await Promise.all([
       this.prisma.property.count({ where: property }),
       this.prisma.property.count({ where: { ...property, status: PropertyStatus.APPROVED } }),
@@ -47,7 +47,7 @@ export class ReportsService {
     // All branches join the same access scope, including the money aggregates.
     const access = actor.role === UserRole.ADMIN ? Prisma.sql`TRUE` : actor.role === UserRole.OWNER ? Prisma.sql`p."ownerId" = ${actor.sub}::uuid` : Prisma.sql`p."managerId" = ${actor.sub}::uuid`
     return this.prisma.$queryRaw<ActivityRow[]>(Prisma.sql`
-      WITH accessible_properties AS (SELECT p.id FROM properties p WHERE ${access}),
+      WITH accessible_properties AS (SELECT p.id FROM properties p WHERE p.status <> 'DRAFT' AND ${access}),
       events AS (
         SELECT p."createdAt" AS occurred_at, 'properties' AS metric, 1::double precision AS value FROM properties p JOIN accessible_properties a ON a.id = p.id
         UNION ALL SELECT b."createdAt", 'bookings', 1 FROM bookings b JOIN stay_listings l ON l.id = b."listingId" JOIN accessible_properties a ON a.id = l."propertyId"

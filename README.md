@@ -15,6 +15,8 @@ Docker is optional; the normal configuration uses hosted PostgreSQL. Do not use 
 
 Administrator accounts are created internally. The optional existing seed script creates only the administrator and must be given a private `SEED_PASSWORD`; it is not required to run migrations and is not a way to onboard staff. Owners and guests register publicly. Property managers, inspectors, and contractors receive administrator-created invitations.
 
+New properties start as drafts and require completed, categorized ownership evidence before `POST /properties/:id/submit` sends them for review. Documents accept PDF, JPEG, or PNG up to 5,000,000 bytes each. Existing property statuses are preserved by the migration. See [property ownership and submission](docs/property-ownership.md) for the API sequence, storage access, and rollout.
+
 ## Account endpoints
 
 All paths below are under `/api/v1`.

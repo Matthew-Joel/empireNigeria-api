@@ -8,6 +8,7 @@ const { AppModule } = require('../dist/app.module')
 const { PrismaService } = require('../dist/database/prisma.service')
 const { SupabaseStorageService } = require('../dist/modules/storage/supabase-storage.service')
 const { configureApp } = require('../dist/app.setup')
+const { submitPropertyWithOwnership } = require('./test-support/submit-property-with-ownership.cjs')
 
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLytQAAAABJRU5ErkJggg==', 'base64')
 
@@ -40,6 +41,7 @@ async function main() {
     const created = await request('/properties', 'POST', users.OWNER, draft)
     assert.equal(created.status, 201, 'Create property')
     propertyId = created.body.id
+    await submitPropertyWithOwnership({ request, prisma, propertyId, owner: users.OWNER, keys })
     assert.equal((await request(`/properties/${propertyId}/review`, 'PATCH', users.ADMIN, { status: 'UNDER_REVIEW', reviewNote: 'Inspection smoke' })).status, 200)
     assert.equal((await request(`/properties/${propertyId}/review`, 'PATCH', users.ADMIN, { status: 'APPROVED' })).status, 200)
     assert.equal((await request(`/properties/${propertyId}/manager`, 'PATCH', users.ADMIN, { managerId: users.PROPERTY_MANAGER.id })).status, 200)

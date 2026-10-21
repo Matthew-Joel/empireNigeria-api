@@ -30,6 +30,7 @@ enum AuthChallengePurpose {
 }
 
 enum PropertyStatus {
+  DRAFT
   SUBMITTED
   UNDER_REVIEW
   INSPECTION_PENDING
@@ -50,9 +51,19 @@ enum PropertyFilePurpose {
   DOCUMENT
 }
 
+enum OwnershipDocumentType {
+  CERTIFICATE_OF_OCCUPANCY
+  DEED_OF_ASSIGNMENT
+  DEED_OF_CONVEYANCE
+  REGISTERED_SURVEY_PLAN
+  GRANT_OF_PROBATE
+  LETTER_OF_ADMINISTRATION
+}
+
 enum PropertyFileStatus {
   PENDING
   READY
+  DELETING
 }
 
 enum InspectionStatus {
@@ -203,6 +214,7 @@ model Property {
   tenantPhone String? @db.VarChar(30)
   tenancyStart DateTime? @db.Date
   status PropertyStatus @default(SUBMITTED)
+  ownershipProofRequired Boolean @default(false)
   reviewNote String? @db.Text
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -227,6 +239,7 @@ model PropertyFile {
   propertyId String @db.Uuid
   uploaderId String @db.Uuid
   purpose PropertyFilePurpose
+  ownershipDocumentType OwnershipDocumentType?
   status PropertyFileStatus @default(PENDING)
   objectKey String @unique @db.VarChar(500)
   originalName String @db.VarChar(255)

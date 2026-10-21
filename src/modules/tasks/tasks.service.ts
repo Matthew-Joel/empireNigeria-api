@@ -1,5 +1,5 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common'
-import { ManagerTaskStatus, Prisma, UserRole } from '@prisma/client'
+import { ManagerTaskStatus, Prisma, PropertyStatus, UserRole } from '@prisma/client'
 import { AuthenticatedRequest } from '../../common/types/request-with-user'
 import { PrismaService } from '../../database/prisma.service'
 import { CreateTaskDto, UpdateTaskDto } from './dto/task.dto'
@@ -16,8 +16,9 @@ export class TasksService {
     return this.prisma.managerTask.findMany({ where, include, orderBy: [{ status: 'asc' }, { dueAt: 'asc' }, { createdAt: 'desc' }] })
   }
   async create(dto: CreateTaskDto, actor: Actor) {
-    const property = await this.prisma.property.findUnique({ where: { id: dto.propertyId }, select: { id: true, ownerId: true, managerId: true } })
+    const property = await this.prisma.property.findUnique({ where: { id: dto.propertyId }, select: { id: true, ownerId: true, managerId: true, status: true } })
     if (!property || (actor.role !== UserRole.ADMIN && property.ownerId !== actor.sub && property.managerId !== actor.sub)) throw new NotFoundException('Property not found')
+    if (property.status === PropertyStatus.DRAFT) throw new BadRequestException('Submit the property before creating tasks')
     if (!property.managerId) throw new BadRequestException('Assign a property manager before creating tasks')
     let dueAt: Date | undefined
     if (dto.dueAt) {

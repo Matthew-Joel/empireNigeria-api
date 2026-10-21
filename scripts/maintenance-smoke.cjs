@@ -8,6 +8,7 @@ const { AppModule } = require('../dist/app.module')
 const { PrismaService } = require('../dist/database/prisma.service')
 const { SupabaseStorageService } = require('../dist/modules/storage/supabase-storage.service')
 const { configureApp } = require('../dist/app.setup')
+const { submitPropertyWithOwnership } = require('./test-support/submit-property-with-ownership.cjs')
 
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLytQAAAABJRU5ErkJggg==', 'base64')
 
@@ -51,6 +52,7 @@ async function main() {
     const created = await request('/properties', 'POST', users.OWNER, { name: 'Temporary maintenance home', type: 'Apartment', description: 'Temporary property for maintenance workflow verification.', address: '1 Test Street', city: 'Lagos', state: 'Lagos', country: 'Nigeria', occupancyStatus: 'VACANT' })
     assert.equal(created.status, 201, 'Create property')
     propertyId = created.body.id
+    await submitPropertyWithOwnership({ request, prisma, propertyId, owner: users.OWNER, keys })
     assert.equal((await request(`/properties/${propertyId}/manager`, 'PATCH', users.ADMIN, { managerId: users.PROPERTY_MANAGER.id })).status, 200)
     const reported = await request('/maintenance', 'POST', users.OWNER, { propertyId, issue: 'Kitchen pipe leak', description: 'Water is leaking below the kitchen sink.', priority: 'HIGH' })
     assert.equal(reported.status, 201, `Owner reports issue: ${JSON.stringify(reported.body)}`)

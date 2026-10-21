@@ -35,11 +35,11 @@ export class AdminService {
       this.prisma.user.count(),
       this.prisma.user.count({ where: { status: UserStatus.INVITED } }),
       this.prisma.user.count({ where: { status: UserStatus.PENDING } }),
-      this.prisma.property.count(),
+      this.prisma.property.count({ where: { status: { not: PropertyStatus.DRAFT } } }),
       this.prisma.property.count({ where: { status: { in: [PropertyStatus.SUBMITTED, PropertyStatus.UNDER_REVIEW, PropertyStatus.CHANGES_REQUESTED] } } }),
       this.prisma.property.count({ where: { status: PropertyStatus.INSPECTION_PENDING } }),
       this.prisma.user.findMany({ take: 5, orderBy: { createdAt: 'desc' }, select: { id: true, email: true, role: true, status: true, createdAt: true, profile: { select: { firstName: true, lastName: true } } } }),
-      this.prisma.property.findMany({ take: 5, orderBy: { createdAt: 'desc' }, select: { id: true, name: true, status: true, createdAt: true, owner: { select: { email: true } } } }),
+      this.prisma.property.findMany({ where: { status: { not: PropertyStatus.DRAFT } }, take: 5, orderBy: { createdAt: 'desc' }, select: { id: true, name: true, status: true, createdAt: true, owner: { select: { email: true } } } }),
       this.overviewActivity(),
     ])
     return { totalUsers, invitedStaff, pendingVerification, totalProperties, reviewQueue, inspectionPending, recentUsers, recentProperties, ...activity }
@@ -58,7 +58,7 @@ export class AdminService {
         SELECT 'totalUsers' AS metric, "createdAt" FROM users
         UNION ALL SELECT 'invitedStaff', "createdAt" FROM users WHERE status = 'INVITED'
         UNION ALL SELECT 'pendingVerification', "createdAt" FROM users WHERE status = 'PENDING'
-        UNION ALL SELECT 'totalProperties', "createdAt" FROM properties
+        UNION ALL SELECT 'totalProperties', "createdAt" FROM properties WHERE status <> 'DRAFT'
         UNION ALL SELECT 'reviewQueue', "createdAt" FROM properties WHERE status IN ('SUBMITTED', 'UNDER_REVIEW', 'CHANGES_REQUESTED')
         UNION ALL SELECT 'inspectionPending', "createdAt" FROM properties WHERE status = 'INSPECTION_PENDING'
       )
@@ -78,7 +78,7 @@ export class AdminService {
     const range = reportingPeriod()
     type MonthlyCount = { month: string; count: number }
     const [properties, inspections, maintenance, completed, maintenanceStatuses] = await Promise.all([
-      this.prisma.$queryRaw<MonthlyCount[]>`SELECT to_char("createdAt" AT TIME ZONE 'UTC' AT TIME ZONE 'Africa/Lagos', 'YYYY-MM') AS month, count(*)::int AS count FROM "properties" WHERE "createdAt" >= ${range.start} AND "createdAt" < ${range.end} GROUP BY 1`,
+      this.prisma.$queryRaw<MonthlyCount[]>`SELECT to_char("createdAt" AT TIME ZONE 'UTC' AT TIME ZONE 'Africa/Lagos', 'YYYY-MM') AS month, count(*)::int AS count FROM "properties" WHERE status <> 'DRAFT' AND "createdAt" >= ${range.start} AND "createdAt" < ${range.end} GROUP BY 1`,
       this.prisma.$queryRaw<MonthlyCount[]>`SELECT to_char("createdAt" AT TIME ZONE 'UTC' AT TIME ZONE 'Africa/Lagos', 'YYYY-MM') AS month, count(*)::int AS count FROM "inspections" WHERE "createdAt" >= ${range.start} AND "createdAt" < ${range.end} GROUP BY 1`,
       this.prisma.$queryRaw<MonthlyCount[]>`SELECT to_char("reportedAt" AT TIME ZONE 'UTC' AT TIME ZONE 'Africa/Lagos', 'YYYY-MM') AS month, count(*)::int AS count FROM "maintenance_requests" WHERE "reportedAt" >= ${range.start} AND "reportedAt" < ${range.end} GROUP BY 1`,
       this.prisma.$queryRaw<MonthlyCount[]>`SELECT to_char("completedAt" AT TIME ZONE 'UTC' AT TIME ZONE 'Africa/Lagos', 'YYYY-MM') AS month, count(*)::int AS count FROM "maintenance_requests" WHERE "completedAt" >= ${range.start} AND "completedAt" < ${range.end} GROUP BY 1`,

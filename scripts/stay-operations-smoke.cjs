@@ -6,16 +6,20 @@ const { NestFactory } = require('@nestjs/core')
 const { JwtService } = require('@nestjs/jwt')
 const { AppModule } = require('../dist/app.module')
 const { PrismaService } = require('../dist/database/prisma.service')
+const { SupabaseStorageService } = require('../dist/modules/storage/supabase-storage.service')
 const { configureApp } = require('../dist/app.setup')
+const { submitPropertyWithOwnership } = require('./test-support/submit-property-with-ownership.cjs')
 
 const date = (days) => new Date(Date.now() + days * 86_400_000).toISOString().slice(0, 10)
 async function main() {
   const app = await NestFactory.create(AppModule, { logger: ['error'] })
   configureApp(app)
   const prisma = app.get(PrismaService)
+  const storage = app.get(SupabaseStorageService)
   const jwt = app.get(JwtService)
   const run = randomUUID().slice(0, 12)
   const userIds = []
+  const keys = new Set()
   let propertyId
   try {
     const users = {}
@@ -34,6 +38,8 @@ async function main() {
     const home = await request('/properties', 'POST', users.OWNER, { name: 'Temporary Stay home', type: 'Apartment', description: 'Temporary approved property for live Stay workflow verification.', address: '1 Integration Street', city: 'Lagos', state: 'Lagos', country: 'Nigeria', occupancyStatus: 'VACANT' })
     assert.equal(home.status, 201, `Create property: ${JSON.stringify(home.body)}`)
     propertyId = home.body.id
+    await submitPropertyWithOwnership({ request, prisma, propertyId, owner: users.OWNER, keys })
+    assert.equal((await request(`/properties/${propertyId}/review`, 'PATCH', users.ADMIN, { status: 'UNDER_REVIEW' })).status, 200, 'Review submitted ownership proof')
     assert.equal((await request(`/properties/${propertyId}/review`, 'PATCH', users.ADMIN, { status: 'APPROVED' })).status, 200, 'Approve property')
     assert.equal((await request(`/properties/${propertyId}/manager`, 'PATCH', users.ADMIN, { managerId: users.PROPERTY_MANAGER.id })).status, 200, 'Assign manager')
     const occupancy = await request(`/occupancy/${propertyId}`, 'PATCH', users.PROPERTY_MANAGER, { status: 'AVAILABLE_FOR_SHORT_LET', note: 'Prepared and inspected for short let.' })
@@ -96,6 +102,8 @@ async function main() {
     assert.ok(audit.body.items.some((item) => item.entityId === requested.body.id && item.action === 'BOOKING_REQUESTED'), 'Booking action audited')
     console.log('PASS live Stay publication, public search, booking overlap and cancellation, blocked dates, manager task and occupancy, financial records, role scope, reports, and audit. No payment collected.')
   } finally {
+    const cleanupErrors = []
+    for (const key of keys) await storage.remove(key).catch(() => cleanupErrors.push(key))
     if (userIds.length) await prisma.auditEvent.deleteMany({ where: { actorId: { in: userIds } } })
     if (propertyId) {
       await prisma.booking.deleteMany({ where: { listing: { propertyId } } })
@@ -103,6 +111,7 @@ async function main() {
     }
     if (userIds.length) await prisma.user.deleteMany({ where: { id: { in: userIds } } })
     await app.close()
+    if (cleanupErrors.length) throw new Error(`Could not remove ${cleanupErrors.length} Storage fixture(s) from run ${run}`)
   }
 }
 main().catch((error) => { console.error(error instanceof Error ? error.message : 'Stay operations smoke failed'); process.exitCode = 1 })

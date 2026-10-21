@@ -17,6 +17,7 @@ describe('administrator overview', () => {
         expect(start.toISOString()).toBe('2026-04-30T23:00:00.000Z')
         expect(end.toISOString()).toBe('2026-10-01T23:00:00.000Z')
       }
+      expect($queryRaw.mock.calls[0][0].join('')).toContain("status <> 'DRAFT'")
     } finally { jest.useRealTimers() }
   })
   it('returns real account and property counts with bounded recent records', async () => {
@@ -28,8 +29,9 @@ describe('administrator overview', () => {
     expect(overview.metricActivity.totalUsers).toEqual({ current: 0, previous: 0 })
     expect(user.count).toHaveBeenCalledWith({ where: { status: UserStatus.INVITED } })
     expect(property.count).toHaveBeenCalledWith({ where: { status: { in: [PropertyStatus.SUBMITTED, PropertyStatus.UNDER_REVIEW, PropertyStatus.CHANGES_REQUESTED] } } })
+    expect(property.count).toHaveBeenCalledWith({ where: { status: { not: PropertyStatus.DRAFT } } })
     expect(user.findMany).toHaveBeenCalledWith(expect.objectContaining({ take: 5 }))
-    expect(property.findMany).toHaveBeenCalledWith(expect.objectContaining({ take: 5 }))
+    expect(property.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { status: { not: PropertyStatus.DRAFT } }, take: 5 }))
   })
   it('reports monthly creation cohorts without treating them as historical queue snapshots', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-10-10T12:00:00Z'))
@@ -41,6 +43,7 @@ describe('administrator overview', () => {
       expect(result.activityPeriod).toMatchObject({ currentFrom: '2026-10-01', currentTo: '2026-10-10', previousFrom: '2026-09-01', previousTo: '2026-09-30', timeZone: 'Africa/Lagos' })
       expect(result.activityPeriod.basis).toContain('current status')
       expect($queryRaw.mock.calls[0][0].text).toContain("status IN ('SUBMITTED', 'UNDER_REVIEW', 'CHANGES_REQUESTED')")
+      expect($queryRaw.mock.calls[0][0].text).toContain("'totalProperties', \"createdAt\" FROM properties WHERE status <> 'DRAFT'")
     } finally { jest.useRealTimers() }
   })
 })

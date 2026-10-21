@@ -33,7 +33,30 @@ function parseCleanupOptions(args = []) {
 }
 
 function expiredWhere(kind, cutoff, prefix) {
-  return { ...(kind.hasStatus ? { status: 'PENDING' } : {}), createdAt: { lt: cutoff }, objectKey: { startsWith: prefix } }
+  const pending = { ...(kind.hasStatus ? { status: 'PENDING' } : {}), createdAt: { lt: cutoff }, objectKey: { startsWith: prefix } }
+  // A committed deletion marker is no longer usable ownership evidence. The
+  // global worker retries it promptly; a scoped run cannot infer its old prefix
+  // when the object already has a final Storage path.
+  return kind.delegate === 'propertyFile' && prefix === 'pending/' ? { OR: [pending, { status: 'DELETING' }] } : pending
+}
+
+function propertyPaths(row, prefix) {
+  // These identifiers come from UUID database columns. Validate path segments
+  // as well so malformed metadata cannot broaden a cleanup operation.
+  if (![row.propertyId, row.id].every((value) => typeof value === 'string' && /^[a-zA-Z0-9-]+$/.test(value))) return null
+  if (typeof row.objectKey !== 'string') return null
+  const readyKey = `properties/${row.propertyId}/${row.id}`
+  const segments = row.objectKey.split('/')
+  const pendingKey = segments.length >= 3 && segments[0] === 'pending' && segments.slice(1).every((segment) => /^[a-zA-Z0-9][a-zA-Z0-9.-]*$/.test(segment))
+  if (row.status === 'DELETING') {
+    if (prefix !== 'pending/') return null
+    if (row.objectKey === readyKey) return [readyKey]
+    return pendingKey ? [row.objectKey, readyKey] : null
+  }
+  if (row.status !== 'PENDING' || !pendingKey || !row.objectKey.startsWith(prefix)) return null
+  // A Storage move can succeed before its database transaction rolls back.
+  // Delete both tracked candidate paths before dropping that pending metadata.
+  return [row.objectKey, readyKey]
 }
 
 async function cleanupExpiredUploads({ prisma, storage, options = parseCleanupOptions(), now = new Date() }) {
@@ -45,8 +68,8 @@ async function cleanupExpiredUploads({ prisma, storage, options = parseCleanupOp
     const where = expiredWhere(kind, cutoff, options.prefix)
     for (let batch = 0; batch < options.maxBatches; batch += 1) {
       const rows = await prisma[kind.delegate].findMany({
-        where: { ...where, ...(cursor ? { OR: [{ createdAt: { gt: cursor.createdAt } }, { createdAt: cursor.createdAt, id: { gt: cursor.id } }] } : {}) },
-        select: { id: true, objectKey: true, createdAt: true },
+        where: cursor ? { AND: [where, { OR: [{ createdAt: { gt: cursor.createdAt } }, { createdAt: cursor.createdAt, id: { gt: cursor.id } }] }] } : where,
+        select: { id: true, objectKey: true, createdAt: true, ...(kind.delegate === 'propertyFile' ? { propertyId: true, status: true } : {}) },
         orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
         take: options.batchSize,
       })
@@ -54,15 +77,19 @@ async function cleanupExpiredUploads({ prisma, storage, options = parseCleanupOp
       result.batches += 1
       for (const candidate of rows) {
         result.candidates += 1
-        if (options.dryRun) { result.wouldRemove += 1; continue }
+        if (options.dryRun) {
+          result[kind.delegate === 'propertyFile' && !propertyPaths(candidate, options.prefix) ? 'skipped' : 'wouldRemove'] += 1
+          continue
+        }
         try {
           const removed = await prisma.$transaction(async (tx) => {
             // These table names are constants. Upload completion takes the same lock.
             await tx.$queryRawUnsafe(`SELECT "id" FROM "${kind.table}" WHERE "id" = $1::uuid FOR UPDATE`, candidate.id)
-            const current = await tx[kind.delegate].findFirst({ where: { ...where, id: candidate.id }, select: { id: true, objectKey: true } })
+            const current = await tx[kind.delegate].findFirst({ where: { ...where, id: candidate.id }, select: { id: true, objectKey: true, ...(kind.delegate === 'propertyFile' ? { propertyId: true, status: true } : {}) } })
             if (!current) return false
-            if (!current.objectKey.startsWith(options.prefix)) return false
-            await storage.remove(current.objectKey, storage[kind.bucket])
+            const paths = kind.delegate === 'propertyFile' ? propertyPaths(current, options.prefix) : current.objectKey.startsWith(options.prefix) ? [current.objectKey] : null
+            if (!paths) return false
+            for (const path of paths) await storage.remove(path, storage[kind.bucket])
             const deleted = await tx[kind.delegate].deleteMany({ where: { ...where, id: current.id, objectKey: current.objectKey } })
             if (deleted.count !== 1) throw new Error('Locked upload changed before cleanup')
             return true

@@ -1,4 +1,4 @@
-import { UserRole } from '@prisma/client'
+import { PropertyStatus, UserRole } from '@prisma/client'
 import { ReportsService } from './reports.service'
 
 function setup() {
@@ -21,7 +21,8 @@ describe('portfolio report activity', () => {
     expect(query.text).toContain(role === UserRole.OWNER ? 'p."ownerId" = ' : 'p."managerId" = ')
     expect(query.values).toContain(user.sub)
     expect(query.text.match(/JOIN accessible_properties/g)).toHaveLength(8)
-    expect(prisma.property.count).toHaveBeenCalledWith({ where: role === UserRole.OWNER ? { ownerId: user.sub } : { managerId: user.sub } })
+    expect(query.text).toContain("WHERE p.status <> 'DRAFT' AND")
+    expect(prisma.property.count).toHaveBeenCalledWith({ where: { status: { not: PropertyStatus.DRAFT }, ...(role === UserRole.OWNER ? { ownerId: user.sub } : { managerId: user.sub }) } })
     expect(result.series.map((row) => row.month)).toEqual(['2026-09', '2026-10'])
     expect(result.activityTotals.bookedValueNgn).toBe(0)
     expect(result.paymentMetricsAvailable).toBe(false)
@@ -35,6 +36,8 @@ describe('portfolio report activity', () => {
     expect(result.activityTotals.recordedExpensesNgn).toBe(1500)
     expect(result.recordedExpensesNgn).toBe(0)
     expect(result.period).toEqual({ from: '2026-08-01', to: '2026-10-10', timeZone: 'Africa/Lagos' })
+    expect(prisma.property.count).toHaveBeenCalledWith({ where: { status: { not: PropertyStatus.DRAFT } } })
+    expect(prisma.$queryRaw.mock.calls[0][0].text).toContain("WHERE p.status <> 'DRAFT' AND TRUE")
   })
   it('rejects invalid dates and unauthorized roles before querying', async () => {
     const { prisma, service } = setup()

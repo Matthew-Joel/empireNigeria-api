@@ -1,5 +1,5 @@
 import { ConflictException, NotFoundException } from '@nestjs/common'
-import { BookingStatus, PropertyOccupancy, UserRole } from '@prisma/client'
+import { BookingStatus, PropertyOccupancy, PropertyStatus, UserRole } from '@prisma/client'
 import { OccupancyService } from './occupancy.service'
 
 const owner = { sub: 'owner-id', email: 'owner@example.com', role: UserRole.OWNER }
@@ -51,7 +51,7 @@ describe('OccupancyService', () => {
     const [query, lockedPropertyId] = tx.$queryRaw.mock.calls[0]
     expect(query.join('?')).toContain('FROM "stay_listings" WHERE "propertyId" = ?::uuid FOR UPDATE')
     expect(lockedPropertyId).toBe(propertyId)
-    expect(tx.property.findFirst).toHaveBeenCalledWith({ where: { id: propertyId, ownerId: owner.sub }, include: { stayListing: true } })
+    expect(tx.property.findFirst).toHaveBeenCalledWith({ where: { id: propertyId, status: { not: PropertyStatus.DRAFT }, ownerId: owner.sub }, include: { stayListing: true } })
     expect(tx.property.update).toHaveBeenCalledWith({ where: { id: propertyId }, data: { occupancyStatus: PropertyOccupancy.VACANT, tenantName: null, tenantPhone: null, tenancyStart: null } })
     expect(tx.auditEvent.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ action: 'OCCUPANCY_UPDATED', actorId: owner.sub }) }))
     expect(db.property.findFirst).not.toHaveBeenCalled()
@@ -64,9 +64,15 @@ describe('OccupancyService', () => {
 
     await expect(service.update(propertyId, input, owner)).rejects.toBeInstanceOf(NotFoundException)
 
-    expect(tx.property.findFirst).toHaveBeenCalledWith({ where: { id: propertyId, ownerId: owner.sub }, include: { stayListing: true } })
+    expect(tx.property.findFirst).toHaveBeenCalledWith({ where: { id: propertyId, status: { not: PropertyStatus.DRAFT }, ownerId: owner.sub }, include: { stayListing: true } })
     expect(tx.booking.count).not.toHaveBeenCalled()
     expect(tx.property.update).not.toHaveBeenCalled()
     expect(tx.auditEvent.create).not.toHaveBeenCalled()
+  })
+
+  it.each([UserRole.ADMIN, UserRole.OWNER, UserRole.PROPERTY_MANAGER])('excludes unfinished property drafts from %s occupancy', async (role) => {
+    const { service, db } = setup()
+    await service.list({ ...owner, role })
+    expect(db.property.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ status: { not: PropertyStatus.DRAFT } }) }))
   })
 })

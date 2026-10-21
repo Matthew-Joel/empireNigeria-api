@@ -1,5 +1,5 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common'
-import { MaintenanceEvidenceKind, MaintenanceEvidenceStatus, MaintenanceEvidenceType, MaintenanceQuoteStatus, MaintenanceStatus, Prisma, UserRole, UserStatus } from '@prisma/client'
+import { MaintenanceEvidenceKind, MaintenanceEvidenceStatus, MaintenanceEvidenceType, MaintenanceQuoteStatus, MaintenanceStatus, Prisma, PropertyStatus, UserRole, UserStatus } from '@prisma/client'
 import { randomUUID } from 'node:crypto'
 import { AuthenticatedRequest } from '../../common/types/request-with-user'
 import { PrismaService } from '../../database/prisma.service'
@@ -97,8 +97,9 @@ export class MaintenanceService {
 
   async create(dto: CreateMaintenanceDto, actor: Actor) {
     if (actor.role !== UserRole.OWNER) throw new ForbiddenException()
-    const property = await this.prisma.property.findUnique({ where: { id: dto.propertyId }, select: { ownerId: true } })
+    const property = await this.prisma.property.findUnique({ where: { id: dto.propertyId }, select: { ownerId: true, status: true } })
     if (!property || property.ownerId !== actor.sub) throw new NotFoundException('Property not found')
+    if (property.status === PropertyStatus.DRAFT) throw new BadRequestException('Submit the property before reporting maintenance')
     const issue = dto.issue.trim()
     const description = dto.description.trim()
     if (issue.length < 3 || description.length < 10) throw new BadRequestException('Provide an issue title and description')

@@ -1,5 +1,5 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common'
-import { BookingStatus, Prisma, PropertyOccupancy, UserRole } from '@prisma/client'
+import { BookingStatus, Prisma, PropertyOccupancy, PropertyStatus, UserRole } from '@prisma/client'
 import { AuthenticatedRequest } from '../../common/types/request-with-user'
 import { PrismaService } from '../../database/prisma.service'
 import { UpdateOccupancyDto } from './dto/occupancy.dto'
@@ -9,7 +9,7 @@ type Actor = AuthenticatedRequest['user']
 export class OccupancyService {
   constructor(private readonly prisma: PrismaService) {}
   private where(actor: Actor): Prisma.PropertyWhereInput {
-    return actor.role === UserRole.ADMIN ? {} : actor.role === UserRole.OWNER ? { ownerId: actor.sub } : { managerId: actor.sub }
+    return { status: { not: PropertyStatus.DRAFT }, ...(actor.role === UserRole.ADMIN ? {} : actor.role === UserRole.OWNER ? { ownerId: actor.sub } : { managerId: actor.sub }) }
   }
   list(actor: Actor) {
     return this.prisma.property.findMany({ where: this.where(actor), select: { id: true, name: true, city: true, state: true, ownerId: true, managerId: true, occupancyStatus: true, tenantName: true, tenantPhone: true, tenancyStart: true, stayListing: { select: { id: true, status: true } }, occupancyEvents: { orderBy: { createdAt: 'desc' }, take: 10, select: { id: true, status: true, note: true, createdAt: true } } }, orderBy: { createdAt: 'desc' } })

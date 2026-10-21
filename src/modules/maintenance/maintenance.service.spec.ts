@@ -1,5 +1,5 @@
 import { BadRequestException, ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common'
-import { MaintenanceEvidenceKind, MaintenanceEvidenceStatus, MaintenanceQuoteStatus, MaintenanceStatus, UserRole, UserStatus } from '@prisma/client'
+import { MaintenanceEvidenceKind, MaintenanceEvidenceStatus, MaintenanceQuoteStatus, MaintenanceStatus, PropertyStatus, UserRole, UserStatus } from '@prisma/client'
 import { MaintenanceService } from './maintenance.service'
 
 const owner = { sub: 'owner', email: 'owner@example.com', role: UserRole.OWNER }
@@ -16,7 +16,7 @@ const record = {
 function setup() {
   const prisma = {
     maintenanceRequest: { findUnique: jest.fn().mockResolvedValue(record), findMany: jest.fn().mockResolvedValue([record]), create: jest.fn().mockResolvedValue(record), updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
-    property: { findUnique: jest.fn().mockResolvedValue({ ownerId: owner.sub }) },
+    property: { findUnique: jest.fn().mockResolvedValue({ ownerId: owner.sub, status: PropertyStatus.SUBMITTED }) },
     user: { findUnique: jest.fn().mockResolvedValue({ role: UserRole.CONTRACTOR, status: UserStatus.ACTIVE }) },
     maintenanceUpdate: { create: jest.fn() },
     maintenanceQuote: { findFirst: jest.fn().mockResolvedValue(null), create: jest.fn(), updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
@@ -55,6 +55,15 @@ describe('MaintenanceService', () => {
     prisma.user.findUnique.mockResolvedValue({ role: UserRole.CONTRACTOR, status: UserStatus.INVITED })
     await expect(service.assign('request', { contractorId: 'contractor', note: 'Please repair the kitchen pipe.' }, admin)).rejects.toBeInstanceOf(BadRequestException)
     expect(prisma.maintenanceRequest.updateMany).not.toHaveBeenCalled()
+  })
+
+  it('rejects maintenance on an unfinished property draft before creating or auditing a request', async () => {
+    const { service, prisma } = setup()
+    prisma.property.findUnique.mockResolvedValue({ ownerId: owner.sub, status: PropertyStatus.DRAFT })
+    await expect(service.create({ propertyId: 'property', issue: 'Leak', description: 'The kitchen pipe is leaking.', priority: 'HIGH' } as never, owner)).rejects.toThrow('Submit the property')
+    expect(prisma.$transaction).not.toHaveBeenCalled()
+    expect(prisma.maintenanceRequest.create).not.toHaveBeenCalled()
+    expect(prisma.auditEvent.create).not.toHaveBeenCalled()
   })
 
   it('rejects unauthorized or out-of-order progress', async () => {

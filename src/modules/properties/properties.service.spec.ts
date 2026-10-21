@@ -11,6 +11,7 @@ function setup() {
   const prisma = {
     property: { findUnique: jest.fn().mockResolvedValue(property), findMany: jest.fn().mockResolvedValue([]), create: jest.fn(), update: jest.fn() },
     propertyFile: { count: jest.fn().mockResolvedValue(0), create: jest.fn(), findFirst: jest.fn(), delete: jest.fn(), update: jest.fn(), updateMany: jest.fn() },
+    auditEvent: { create: jest.fn() },
     $queryRaw: jest.fn().mockResolvedValue([]),
     $transaction: jest.fn(),
   }
@@ -45,7 +46,7 @@ describe('PropertiesService', () => {
     await service.list(owner)
     expect(prisma.property.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { ownerId: owner.sub } }))
     await service.list(manager)
-    expect(prisma.property.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { managerId: manager.sub } }))
+    expect(prisma.property.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { managerId: manager.sub, status: { not: PropertyStatus.DRAFT } } }))
   })
 
   it('hides another owner property and prevents manager editing', async () => {

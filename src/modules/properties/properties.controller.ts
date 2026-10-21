@@ -28,6 +28,9 @@ export class PropertiesController {
   @Patch(':id')
   update(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdatePropertyDto, @CurrentUser() actor: Actor) { return this.properties.update(id, dto, actor) }
 
+  @Post(':id/submit')
+  submit(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() actor: Actor) { return this.properties.submit(id, actor) }
+
   @Patch(':id/review')
   review(@Param('id', ParseUUIDPipe) id: string, @Body() dto: ReviewPropertyDto, @CurrentUser() actor: Actor) { return this.properties.review(id, dto, actor) }
 
