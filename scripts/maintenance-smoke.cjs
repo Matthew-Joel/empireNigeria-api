@@ -1,5 +1,7 @@
 /* Live maintenance workflow smoke test. Run-scoped PostgreSQL and Storage fixtures are removed. */
 require('reflect-metadata')
+// Fixture runs must not email real admins through the workflow notifier.
+process.env.WORKFLOW_EMAILS_DISABLED = 'true'
 const assert = require('node:assert/strict')
 const { randomUUID } = require('node:crypto')
 const { NestFactory } = require('@nestjs/core')

@@ -3,6 +3,7 @@ import { InspectionEvidenceStatus, InspectionEvidenceType, InspectionStatus, Pri
 import { randomUUID } from 'node:crypto'
 import { AuthenticatedRequest } from '../../common/types/request-with-user'
 import { PrismaService } from '../../database/prisma.service'
+import { WorkflowNotifier } from '../notifications/workflow-notifier.service'
 import { fileSignature } from '../storage/file-signature'
 import { SupabaseStorageService } from '../storage/supabase-storage.service'
 import { RescheduleInspectionDto, ScheduleInspectionDto, StartInspectionEvidenceDto, SubmitInspectionReportDto } from './dto/inspection.dto'
@@ -22,7 +23,7 @@ type InspectionRecord = Prisma.InspectionGetPayload<{ include: typeof inspection
 
 @Injectable()
 export class InspectionsService {
-  constructor(private readonly prisma: PrismaService, private readonly storage: SupabaseStorageService) {}
+  constructor(private readonly prisma: PrismaService, private readonly storage: SupabaseStorageService, private readonly notifier: WorkflowNotifier) {}
 
   private serialize(record: InspectionRecord, actor: Actor) {
     const canSeeReport = actor.role === UserRole.ADMIN || actor.role === UserRole.INSPECTOR || record.status === InspectionStatus.REPORT_READY
@@ -103,6 +104,7 @@ export class InspectionsService {
     try {
       const record = await this.prisma.inspection.create({ data: { propertyId: dto.propertyId, inspectorId: dto.inspectorId, purpose: dto.purpose.trim(), summary: dto.summary.trim(), scheduledAt } })
       await this.prisma.auditEvent.create({ data: { actorId: actor.sub, actorRole: actor.role, action: 'INSPECTION_SCHEDULED', entityType: 'INSPECTION', entityId: record.id, summary: 'Administrator scheduled an inspection' } })
+      void this.notifier.inspectionScheduled(record.id, actor.sub)
       return this.get(record.id, actor)
     } catch (error) {
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') throw new ConflictException('An active inspection already exists for this property')
@@ -117,6 +119,7 @@ export class InspectionsService {
     if (dto.inspectorId) await this.validInspector(dto.inspectorId)
     await this.prisma.inspection.update({ where: { id }, data: { scheduledAt: this.futureDate(dto.scheduledAt), inspectorId: dto.inspectorId ?? record.inspectorId } })
     await this.prisma.auditEvent.create({ data: { actorId: actor.sub, actorRole: actor.role, action: 'INSPECTION_RESCHEDULED', entityType: 'INSPECTION', entityId: id, summary: 'Administrator changed an inspection schedule' } })
+    void this.notifier.inspectionRescheduled(id, record.inspectorId, actor.sub)
     return this.get(id, actor)
   }
 
@@ -126,6 +129,7 @@ export class InspectionsService {
     const changed = await this.prisma.inspection.updateMany({ where: { id, status: { in: activeStatuses } }, data: { status: InspectionStatus.CANCELLED } })
     if (!changed.count) throw new ConflictException('This inspection cannot be cancelled')
     await this.prisma.auditEvent.create({ data: { actorId: actor.sub, actorRole: actor.role, action: 'INSPECTION_CANCELLED', entityType: 'INSPECTION', entityId: id, summary: 'Administrator cancelled an inspection' } })
+    void this.notifier.inspectionCancelled(id, actor.sub)
     return this.get(id, actor)
   }
 
@@ -135,6 +139,7 @@ export class InspectionsService {
     const changed = await this.prisma.inspection.updateMany({ where: { id, status: InspectionStatus.SCHEDULED }, data: { status: InspectionStatus.IN_PROGRESS } })
     if (!changed.count) throw new ConflictException('This inspection cannot be started')
     await this.prisma.auditEvent.create({ data: { actorId: actor.sub, actorRole: actor.role, action: 'INSPECTION_STARTED', entityType: 'INSPECTION', entityId: id, summary: 'Inspector started an inspection' } })
+    void this.notifier.inspectionProgress(id, 'started', actor.sub)
     return this.get(id, actor)
   }
 
@@ -144,6 +149,7 @@ export class InspectionsService {
     const changed = await this.prisma.inspection.updateMany({ where: { id, status: InspectionStatus.IN_PROGRESS }, data: { status: InspectionStatus.COMPLETED, completedAt: new Date() } })
     if (!changed.count) throw new ConflictException('Start the inspection before completing the visit')
     await this.prisma.auditEvent.create({ data: { actorId: actor.sub, actorRole: actor.role, action: 'INSPECTION_VISIT_COMPLETED', entityType: 'INSPECTION', entityId: id, summary: 'Inspector completed an inspection visit' } })
+    void this.notifier.inspectionProgress(id, 'visit completed', actor.sub)
     return this.get(id, actor)
   }
 
@@ -159,6 +165,7 @@ export class InspectionsService {
       await tx.inspectionReport.create({ data: { inspectionId: id, overview: dto.overview.trim(), recommendations, findings: { create: dto.findings.map((finding, position) => ({ area: finding.area.trim(), title: finding.title.trim(), severity: finding.severity, detail: finding.detail.trim(), recommendation: finding.recommendation.trim(), position })) } } })
       await tx.auditEvent.create({ data: { actorId: actor.sub, actorRole: actor.role, action: 'INSPECTION_REPORT_SUBMITTED', entityType: 'INSPECTION', entityId: id, summary: 'Inspector submitted an inspection report' } })
     })
+    void this.notifier.inspectionReportReady(id, actor.sub)
     return this.get(id, actor)
   }
 

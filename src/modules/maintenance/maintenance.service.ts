@@ -3,6 +3,7 @@ import { MaintenanceEvidenceKind, MaintenanceEvidenceStatus, MaintenanceEvidence
 import { randomUUID } from 'node:crypto'
 import { AuthenticatedRequest } from '../../common/types/request-with-user'
 import { PrismaService } from '../../database/prisma.service'
+import { WorkflowNotifier } from '../notifications/workflow-notifier.service'
 import { fileSignature } from '../storage/file-signature'
 import { SupabaseStorageService } from '../storage/supabase-storage.service'
 import { AssignMaintenanceDto, CreateMaintenanceDto, DecideMaintenanceQuoteDto, MaintenanceNoteDto, StartMaintenanceEvidenceDto, SubmitMaintenanceQuoteDto } from './dto/maintenance.dto'
@@ -22,7 +23,7 @@ type RecordWithDetails = Prisma.MaintenanceRequestGetPayload<{ include: typeof m
 
 @Injectable()
 export class MaintenanceService {
-  constructor(private readonly prisma: PrismaService, private readonly storage: SupabaseStorageService) {}
+  constructor(private readonly prisma: PrismaService, private readonly storage: SupabaseStorageService, private readonly notifier: WorkflowNotifier) {}
 
   private name(user: { email: string; profile: { firstName: string; lastName: string } | null } | null) {
     return user ? (user.profile ? `${user.profile.firstName} ${user.profile.lastName}`.trim() : user.email) : null
@@ -111,6 +112,7 @@ export class MaintenanceService {
       await this.audit(actor, 'MAINTENANCE_REPORTED', created.id, 'Owner reported a maintenance issue', tx)
       return created
     })
+    void this.notifier.maintenanceReported(record.id, actor.sub)
     return this.get(record.id, actor)
   }
 
@@ -127,6 +129,7 @@ export class MaintenanceService {
       await tx.maintenanceUpdate.create({ data: { requestId: id, authorId: actor.sub, status: MaintenanceStatus.ASSIGNED, note: dto.note.trim() } })
       await this.audit(actor, 'MAINTENANCE_ASSIGNED', id, 'Administrator assigned a contractor', tx)
     })
+    void this.notifier.maintenanceAssigned(id, actor.sub)
     return this.get(id, actor)
   }
 
@@ -145,6 +148,7 @@ export class MaintenanceService {
       await tx.maintenanceUpdate.create({ data: { requestId: id, authorId: actor.sub, status: MaintenanceStatus.PENDING_APPROVAL, note: `Quote submitted for NGN ${dto.amountNgn.toLocaleString('en-NG')}. ${scope}` } })
       await this.audit(actor, 'MAINTENANCE_QUOTE_SUBMITTED', id, 'Contractor submitted a maintenance quote', tx)
     })
+    void this.notifier.maintenanceQuoteSubmitted(id, actor.sub)
     return this.get(id, actor)
   }
 
@@ -165,6 +169,7 @@ export class MaintenanceService {
       await tx.maintenanceUpdate.create({ data: { requestId: id, authorId: actor.sub, status: next, note: approved ? note || 'Owner approved the maintenance quote.' : note } })
       await this.audit(actor, approved ? 'MAINTENANCE_QUOTE_APPROVED' : 'MAINTENANCE_QUOTE_REJECTED', id, approved ? 'Owner approved a maintenance quote' : 'Owner rejected a maintenance quote', tx)
     })
+    void this.notifier.maintenanceQuoteDecided(id, actor.sub)
     return this.get(id, actor)
   }
 
@@ -212,6 +217,7 @@ export class MaintenanceService {
       await tx.maintenanceUpdate.create({ data: { requestId: id, authorId: actor.sub, status: to, note: note.trim() } })
       await this.audit(actor, `MAINTENANCE_${to}`, id, `Maintenance moved to ${to.replaceAll('_', ' ').toLowerCase()}`, tx)
     })
+    if (to === MaintenanceStatus.IN_PROGRESS || to === MaintenanceStatus.COMPLETED || to === MaintenanceStatus.CLOSED) void this.notifier.maintenanceStatusChanged(id, to, actor.sub)
   }
 
   private canUpload(record: RecordWithDetails, actor: Actor, kind: MaintenanceEvidenceKind) {

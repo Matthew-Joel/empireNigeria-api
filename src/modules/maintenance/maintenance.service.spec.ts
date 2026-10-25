@@ -27,7 +27,8 @@ function setup() {
   }
   prisma.$transaction.mockImplementation(async (work: (tx: unknown) => Promise<unknown>) => work(prisma))
   const storage = { signUpload: jest.fn().mockResolvedValue('https://storage.example/upload'), download: jest.fn(), move: jest.fn(), signedDownload: jest.fn(), remove: jest.fn() }
-  return { service: new MaintenanceService(prisma as never, storage as never), prisma, storage }
+  const notifier = { maintenanceReported: jest.fn(), maintenanceAssigned: jest.fn(), maintenanceQuoteSubmitted: jest.fn(), maintenanceQuoteDecided: jest.fn(), maintenanceStatusChanged: jest.fn() }
+  return { service: new MaintenanceService(prisma as never, storage as never, notifier as never), prisma, storage, notifier }
 }
 
 describe('MaintenanceService', () => {
@@ -48,6 +49,17 @@ describe('MaintenanceService', () => {
     await expect(service.create(dto as never, manager)).rejects.toBeInstanceOf(ForbiddenException)
     await service.create(dto as never, owner)
     expect(prisma.maintenanceRequest.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ propertyId: 'property', priority: 'HIGH' }) }))
+  })
+
+  it('notifies the right people after a report, and not when the change conflicts', async () => {
+    const { service, prisma, notifier } = setup()
+    const dto = { propertyId: 'property', issue: 'Leak', description: 'The kitchen pipe is leaking.', priority: 'HIGH' }
+    await service.create(dto as never, owner)
+    expect(notifier.maintenanceReported).toHaveBeenCalledWith('request', owner.sub)
+    prisma.maintenanceRequest.findUnique.mockResolvedValue({ ...record, status: MaintenanceStatus.IN_PROGRESS })
+    prisma.maintenanceRequest.updateMany.mockResolvedValue({ count: 0 })
+    await expect(service.close('request', { note: 'Closing this request now.' }, admin)).rejects.toBeInstanceOf(ConflictException)
+    expect(notifier.maintenanceStatusChanged).not.toHaveBeenCalled()
   })
 
   it('requires an active contractor for assignment', async () => {

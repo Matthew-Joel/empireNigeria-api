@@ -5,10 +5,11 @@ import { RolesGuard } from '../../common/guards/roles.guard'
 import { AuthModule } from '../auth/auth.module'
 import { PropertiesController } from './properties.controller'
 import { PropertiesService } from './properties.service'
+import { NotificationsModule } from '../notifications/notifications.module'
 import { StorageModule } from '../storage/storage.module'
 
 @Module({
-  imports: [AuthModule, JwtModule.register({}), StorageModule],
+  imports: [AuthModule, JwtModule.register({}), StorageModule, NotificationsModule],
   controllers: [PropertiesController],
   providers: [PropertiesService, JwtAuthGuard, RolesGuard],
 })

@@ -28,7 +28,8 @@ function setup() {
   }
   prisma.$transaction.mockImplementation(async (work: (tx: unknown) => Promise<unknown>) => work(prisma))
   const storage = { signUpload: jest.fn().mockResolvedValue('https://storage.example/upload'), download: jest.fn(), move: jest.fn(), signedDownload: jest.fn(), remove: jest.fn() }
-  return { service: new InspectionsService(prisma as never, storage as never), prisma, storage }
+  const notifier = { inspectionScheduled: jest.fn(), inspectionRescheduled: jest.fn(), inspectionCancelled: jest.fn(), inspectionProgress: jest.fn(), inspectionReportReady: jest.fn() }
+  return { service: new InspectionsService(prisma as never, storage as never, notifier as never), prisma, storage, notifier }
 }
 
 describe('InspectionsService', () => {
@@ -52,6 +53,26 @@ describe('InspectionsService', () => {
     const after = await service.get('visit', owner)
     expect(after.report?.id).toBe('report')
     expect(after.evidence).toHaveLength(1)
+  })
+
+  it('notifies after scheduling, and not when an active inspection already exists', async () => {
+    const dto = { propertyId: 'home', inspectorId: 'inspector', purpose: 'Routine', summary: 'Inspect the home', scheduledAt: '2030-01-01T00:00:00Z' }
+    const { service, prisma, notifier } = setup()
+    prisma.inspection.findFirst.mockResolvedValue({ id: 'existing' })
+    await expect(service.schedule(dto, admin)).rejects.toBeInstanceOf(ConflictException)
+    expect(notifier.inspectionScheduled).not.toHaveBeenCalled()
+    prisma.inspection.findFirst.mockResolvedValue(null)
+    await service.schedule(dto, admin)
+    expect(notifier.inspectionScheduled).toHaveBeenCalledWith('visit', admin.sub)
+  })
+
+  it('notifies about a submitted report only once it is stored', async () => {
+    const { service, prisma, notifier } = setup()
+    const dto = { overview: 'The property condition is good.', recommendations: ['Keep it clean'], findings: [] }
+    prisma.inspection.findUnique.mockResolvedValue({ ...record, status: InspectionStatus.COMPLETED })
+    prisma.inspection.updateMany.mockResolvedValue({ count: 0 })
+    await expect(service.submitReport('visit', dto, inspector)).rejects.toBeInstanceOf(ConflictException)
+    expect(notifier.inspectionReportReady).not.toHaveBeenCalled()
   })
 
   it('prevents duplicate active inspections and invalid status transitions', async () => {

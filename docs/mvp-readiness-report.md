@@ -56,7 +56,6 @@ Fixed in this round, pending deployment:
 
 Still open:
 
-- No owner email when a property is approved or changes are requested.
 - No way to suspend a user from the app.
 - Completing an inspection does not move the property forward.
 - Visual QA of the changed screens has not been done in a browser. The Playwright run started for this report did not finish.
@@ -116,7 +115,6 @@ Run each on desktop and on a phone, with a fresh account.
 5. **Confirm real contact details.** The phone number is now 0808 781 2341. Confirm the email address, office location and opening hours shown on the contact page.
 
 ### Strongly recommended, small
-- Email the owner when a property is approved or changes are requested.
 - Make completing an inspection move the property to the next review step, or document that it is manual.
 
 ### Can wait until after launch

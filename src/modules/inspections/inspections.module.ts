@@ -3,12 +3,13 @@ import { JwtModule } from '@nestjs/jwt'
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard'
 import { RolesGuard } from '../../common/guards/roles.guard'
 import { AuthModule } from '../auth/auth.module'
+import { NotificationsModule } from '../notifications/notifications.module'
 import { StorageModule } from '../storage/storage.module'
 import { InspectionsController } from './inspections.controller'
 import { InspectionsService } from './inspections.service'
 
 @Module({
-  imports: [AuthModule, JwtModule.register({}), StorageModule],
+  imports: [AuthModule, JwtModule.register({}), StorageModule, NotificationsModule],
   controllers: [InspectionsController],
   providers: [InspectionsService, JwtAuthGuard, RolesGuard],
 })

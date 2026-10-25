@@ -24,7 +24,8 @@ function setup(status: PropertyStatus = PropertyStatus.DRAFT, files: unknown[] =
   }
   prisma.$transaction.mockImplementation(async (work: (tx: unknown) => Promise<unknown>) => work(prisma))
   const storage = { signUpload: jest.fn().mockResolvedValue('https://storage.example/upload'), download: jest.fn(), move: jest.fn(), signedDownload: jest.fn(), remove: jest.fn() }
-  return { service: new PropertiesService(prisma as never, storage as never), prisma, storage, record }
+  const notifier = { propertySubmitted: jest.fn(), propertyReviewed: jest.fn(), propertyManagerAssigned: jest.fn() }
+  return { service: new PropertiesService(prisma as never, storage as never, notifier as never), prisma, storage, record, notifier }
 }
 
 describe('Required property ownership evidence', () => {

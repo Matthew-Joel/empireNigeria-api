@@ -17,7 +17,8 @@ function setup() {
   }
   prisma.$transaction.mockImplementation(async (work: (tx: unknown) => Promise<unknown>) => work(prisma))
   const storage = { signUpload: jest.fn().mockResolvedValue('https://storage.example/upload'), download: jest.fn(), move: jest.fn(), signedDownload: jest.fn(), remove: jest.fn() }
-  return { service: new PropertiesService(prisma as never, storage as never), prisma, storage }
+  const notifier = { propertySubmitted: jest.fn(), propertyReviewed: jest.fn(), propertyManagerAssigned: jest.fn() }
+  return { service: new PropertiesService(prisma as never, storage as never, notifier as never), prisma, storage, notifier }
 }
 
 describe('PropertiesService', () => {
@@ -39,6 +40,16 @@ describe('PropertiesService', () => {
     prisma.property.findUnique.mockResolvedValue({ ...property, status: PropertyStatus.APPROVED })
     await expect(service.review(property.id, { status: PropertyStatus.UNDER_REVIEW } as never, admin)).rejects.toBeInstanceOf(BadRequestException)
     await expect(service.review(property.id, { status: PropertyStatus.CHANGES_REQUESTED } as never, admin)).resolves.toBeDefined()
+  })
+
+  it('notifies after a successful review but not after a rejected transition', async () => {
+    const admin = { sub: 'admin-id', email: 'admin@example.com', role: UserRole.ADMIN }
+    const { service, prisma, notifier } = setup()
+    prisma.property.update.mockResolvedValue({ ...property, status: PropertyStatus.UNDER_REVIEW })
+    await expect(service.review(property.id, { status: PropertyStatus.APPROVED } as never, admin)).rejects.toBeInstanceOf(BadRequestException)
+    expect(notifier.propertyReviewed).not.toHaveBeenCalled()
+    await service.review(property.id, { status: PropertyStatus.UNDER_REVIEW } as never, admin)
+    expect(notifier.propertyReviewed).toHaveBeenCalledWith(property.id, admin.sub)
   })
 
   it('scopes the list to the owner or assigned manager', async () => {

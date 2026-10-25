@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
+import { cleanLine, escapeHtml } from '../notifications/email-templates'
 import { NotificationsService } from '../notifications/notifications.service'
 import { ContactEnquiryDto } from './dto/contact.dto'
 
@@ -31,12 +32,11 @@ export class ContactService {
     return { received: true }
   }
 
-  // Strip line breaks so user input cannot inject email headers into the subject.
   private clean(value: string) {
-    return value.replaceAll(/[\r\n]+/g, ' ').trim()
+    return cleanLine(value)
   }
 
   private escapeHtml(value: string) {
-    return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#039;')
+    return escapeHtml(value)
   }
 }

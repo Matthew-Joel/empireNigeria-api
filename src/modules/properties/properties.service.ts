@@ -6,6 +6,7 @@ import { AuthenticatedRequest } from '../../common/types/request-with-user'
 import { AssignManagerDto, CreatePropertyDto, ReviewPropertyDto, StartPropertyUploadDto, UpdatePropertyDto } from './dto/property.dto'
 import { SupabaseStorageService } from '../storage/supabase-storage.service'
 import { fileSignature } from '../storage/file-signature'
+import { WorkflowNotifier } from '../notifications/workflow-notifier.service'
 
 type Actor = AuthenticatedRequest['user']
 
@@ -30,7 +31,7 @@ const propertyInclude = {
 
 @Injectable()
 export class PropertiesService {
-  constructor(private readonly prisma: PrismaService, private readonly storage: SupabaseStorageService) {}
+  constructor(private readonly prisma: PrismaService, private readonly storage: SupabaseStorageService, private readonly notifier: WorkflowNotifier) {}
 
   private async lockedProperty(id: string, actor: Actor, tx: Prisma.TransactionClient, edit = false) {
     await tx.$queryRaw`SELECT "id" FROM "properties" WHERE "id" = ${id}::uuid FOR UPDATE`
@@ -90,7 +91,8 @@ export class PropertiesService {
   }
 
   async submit(id: string, actor: Actor) {
-    return this.prisma.$transaction(async (tx) => {
+    let changed = false
+    const result = await this.prisma.$transaction(async (tx) => {
       const property = await this.lockedProperty(id, actor, tx, true)
       this.requireOwnershipProof(property)
       // A client may retry after the first response was lost. Do not rewind an
@@ -98,13 +100,16 @@ export class PropertiesService {
       if (property.status !== PropertyStatus.DRAFT && property.status !== PropertyStatus.CHANGES_REQUESTED) return property
       const submitted = await tx.property.update({ where: { id }, data: { status: PropertyStatus.SUBMITTED, reviewNote: null }, include: propertyInclude })
       await tx.auditEvent.create({ data: { actorId: actor.sub, actorRole: actor.role, action: 'PROPERTY_SUBMITTED', entityType: 'PROPERTY', entityId: id, summary: 'Property submitted for administrator review' } })
+      changed = true
       return submitted
     }, PROPERTY_TRANSACTION_OPTIONS)
+    if (changed) void this.notifier.propertySubmitted(id, actor.sub)
+    return result
   }
 
   async review(id: string, dto: ReviewPropertyDto, actor: Actor) {
     if (actor.role !== UserRole.ADMIN) throw new ForbiddenException()
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       const existing = await this.lockedProperty(id, actor, tx)
       if (dto.status === PropertyStatus.SUBMITTED || dto.status === PropertyStatus.DRAFT) throw new BadRequestException('Invalid review status')
       if (!REVIEW_TRANSITIONS[existing.status].includes(dto.status)) throw new BadRequestException(`Cannot move a property from ${existing.status.toLowerCase().replaceAll('_', ' ')} to ${dto.status.toLowerCase().replaceAll('_', ' ')}`)
@@ -113,11 +118,13 @@ export class PropertiesService {
       await tx.auditEvent.create({ data: { actorId: actor.sub, actorRole: actor.role, action: 'PROPERTY_REVIEWED', entityType: 'PROPERTY', entityId: id, summary: `Administrator moved property to ${dto.status.toLowerCase().replaceAll('_', ' ')}` } })
       return property
     }, PROPERTY_TRANSACTION_OPTIONS)
+    void this.notifier.propertyReviewed(id, actor.sub)
+    return result
   }
 
   async assignManager(id: string, dto: AssignManagerDto, actor: Actor) {
     if (actor.role !== UserRole.ADMIN) throw new ForbiddenException()
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       const existing = await this.lockedProperty(id, actor, tx)
       if (existing.status === PropertyStatus.DRAFT) throw new BadRequestException('Submit the property for review before assigning a manager')
       if (dto.managerId) {
@@ -128,6 +135,8 @@ export class PropertiesService {
       await tx.auditEvent.create({ data: { actorId: actor.sub, actorRole: actor.role, action: 'PROPERTY_MANAGER_ASSIGNED', entityType: 'PROPERTY', entityId: id, summary: dto.managerId ? 'Administrator assigned a property manager' : 'Administrator removed the property manager' } })
       return property
     }, PROPERTY_TRANSACTION_OPTIONS)
+    if (dto.managerId) void this.notifier.propertyManagerAssigned(id, actor.sub)
+    return result
   }
 
   async startUpload(id: string, dto: StartPropertyUploadDto, actor: Actor) {

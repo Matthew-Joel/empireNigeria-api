@@ -124,6 +124,28 @@ The live test must only be run with permission to send email to that mailbox. It
 
 Browser account tests in the frontend use explicit API fixtures; they are separate from the live API test.
 
+## Email notifications
+
+Property, inspection and maintenance changes email the people involved through Resend (`WorkflowNotifier` in `src/modules/notifications`). Emails are sent after the database change commits and are best-effort: a delivery failure is logged and never fails the request, and nothing is retried. Links use `APP_URL`. Admin emails go to every active administrator. Set `WORKFLOW_EMAILS_DISABLED=true` to silence them (the fixture smoke scripts do this).
+
+| Event | Recipients |
+| --- | --- |
+| Property submitted | Admins |
+| Property approved, changes requested, or sent to inspection | Owner (manager too on approval) |
+| Property manager assigned | Manager, owner |
+| Inspection scheduled, rescheduled, cancelled | Inspector, owner, manager (previous inspector on reassignment) |
+| Inspection started, visit completed | Admins |
+| Inspection report ready | Admins, owner, manager |
+| Maintenance reported | Admins, manager |
+| Contractor assigned | Contractor, owner |
+| Quote submitted | Owner (needs approval), admins, manager |
+| Quote approved or rejected | Contractor, admins, manager |
+| Work started | Owner |
+| Work completed | Owner, admins |
+| Request closed | Owner |
+
+The person who made the change is never emailed about it.
+
 ## Deployment notes
 
 - Require Resend settings in production and use a verified sender. Set `APP_URL` to the real frontend origin so invitation links lead to the correct site.
