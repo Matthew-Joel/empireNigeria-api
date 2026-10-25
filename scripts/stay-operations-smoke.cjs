@@ -1,7 +1,5 @@
 /* Live non-payment workflow check. Creates run-scoped records and removes them. */
 require('reflect-metadata')
-// Fixture runs must not email real admins through the workflow notifier.
-process.env.WORKFLOW_EMAILS_DISABLED = 'true'
 const assert = require('node:assert/strict')
 const { randomUUID } = require('node:crypto')
 const { NestFactory } = require('@nestjs/core')

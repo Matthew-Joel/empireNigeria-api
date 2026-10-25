@@ -116,14 +116,6 @@ describe('WorkflowNotifier', () => {
     await expect(notifier.propertyReviewed('home')).resolves.toBeUndefined()
   })
 
-  it('sends nothing when workflow emails are disabled', async () => {
-    const { prisma, notifications } = setup()
-    const notifier = new WorkflowNotifier(prisma as never, notifications as never, new ConfigService({ WORKFLOW_EMAILS_DISABLED: 'true' }))
-    await notifier.propertySubmitted('home')
-    expect(prisma.property.findUnique).not.toHaveBeenCalled()
-    expect(notifications.sendEmail).not.toHaveBeenCalled()
-  })
-
   it('strips line breaks from subjects', async () => {
     const { notifier, prisma, notifications } = setup()
     prisma.property.findUnique.mockResolvedValue({ ...property, name: 'Evil\r\nBcc: x@example.com' })

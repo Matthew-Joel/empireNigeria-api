@@ -1,6 +1,4 @@
 require('reflect-metadata')
-// Fixture runs must not email real admins through the workflow notifier.
-process.env.WORKFLOW_EMAILS_DISABLED = 'true'
 const assert = require('node:assert/strict')
 const { NestFactory } = require('@nestjs/core')
 const { AppModule } = require('../dist/app.module')

@@ -126,7 +126,7 @@ Browser account tests in the frontend use explicit API fixtures; they are separa
 
 ## Email notifications
 
-Property, inspection and maintenance changes email the people involved through Resend (`WorkflowNotifier` in `src/modules/notifications`). Emails are sent after the database change commits and are best-effort: a delivery failure is logged and never fails the request, and nothing is retried. Links use `APP_URL`. Admin emails go to every active administrator. Set `WORKFLOW_EMAILS_DISABLED=true` to silence them (the fixture smoke scripts do this).
+Property, inspection and maintenance changes email the people involved through Resend (`WorkflowNotifier` in `src/modules/notifications`). Emails are sent after the database change commits and are best-effort: a delivery failure is logged and never fails the request, and nothing is retried. Links use `APP_URL`. Admin emails go to every active administrator.
 
 | Event | Recipients |
 | --- | --- |

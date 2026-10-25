@@ -81,8 +81,6 @@ export class WorkflowNotifier {
   }
 
   private async run(event: string, work: () => Promise<void>) {
-    // Test fixtures run against the real database, so they switch workflow mail off.
-    if (this.config.get<string>('WORKFLOW_EMAILS_DISABLED') === 'true') return
     try {
       await work()
     } catch (error) {
