@@ -38,6 +38,12 @@ enum PropertyStatus {
   CHANGES_REQUESTED
 }
 
+enum InspectionConsent {
+  NOT_RECORDED
+  GRANTED
+  DISCUSSION_REQUESTED
+}
+
 enum PropertyOccupancy {
   OCCUPIED
   VACANT
@@ -181,6 +187,8 @@ model User {
   uploadedPropertyFiles PropertyFile[]
   profileImageUploads ProfileImageUpload[]
   assignedInspections Inspection[] @relation("InspectionInspector")
+  confirmedInspectionAccess Inspection[] @relation("InspectionAccessConfirmer")
+  recordedInspectionConsents Property[] @relation("PropertyConsentRecorder")
   uploadedInspectionEvidence InspectionEvidence[]
   assignedMaintenance MaintenanceRequest[] @relation("MaintenanceContractor")
   maintenanceUpdates MaintenanceUpdate[]
@@ -216,10 +224,17 @@ model Property {
   status PropertyStatus @default(SUBMITTED)
   ownershipProofRequired Boolean @default(false)
   reviewNote String? @db.Text
+  inspectionConsent InspectionConsent @default(NOT_RECORDED)
+  inspectionConsentAt DateTime?
+  inspectionConsentById String? @db.Uuid
+  inspectionConsentNote String? @db.Text
+  inspectionConsentRequestedAt DateTime?
+  inspectionReadyAt DateTime?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   owner User @relation("PropertyOwner", fields: [ownerId], references: [id])
   manager User? @relation("PropertyManager", fields: [managerId], references: [id], onDelete: SetNull)
+  inspectionConsentBy User? @relation("PropertyConsentRecorder", fields: [inspectionConsentById], references: [id], onDelete: SetNull)
   files PropertyFile[]
   inspections Inspection[]
   maintenanceRequests MaintenanceRequest[]
@@ -264,11 +279,17 @@ model Inspection {
   summary String @db.Text
   scheduledAt DateTime
   completedAt DateTime?
+  accessConfirmedAt DateTime?
+  accessConfirmedById String? @db.Uuid
+  accessContact String? @db.VarChar(160)
+  occupantAuthorised Boolean @default(false)
+  accessNote String? @db.Text
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
   inspector User @relation("InspectionInspector", fields: [inspectorId], references: [id])
+  accessConfirmedBy User? @relation("InspectionAccessConfirmer", fields: [accessConfirmedById], references: [id], onDelete: SetNull)
   report InspectionReport?
   evidence InspectionEvidence[]
 
@@ -544,6 +565,7 @@ model ManagerTask {
   propertyId String @db.Uuid
   managerId String @db.Uuid
   createdById String @db.Uuid
+  kind String? @db.VarChar(40)
   title String @db.VarChar(160)
   description String @db.Text
   status ManagerTaskStatus @default(OPEN)

@@ -15,6 +15,8 @@ Docker is optional; the normal configuration uses hosted PostgreSQL. Do not use 
 
 Administrator accounts are created internally. The optional existing seed script creates only the administrator and must be given a private `SEED_PASSWORD`; it is not required to run migrations and is not a way to onboard staff. Owners and guests register publicly. Property managers, inspectors, and contractors receive administrator-created invitations.
 
+Inspections need the owner's consent and a confirmed way in before the inspector can visit. See [the inspection workflow](docs/inspection-workflow.md).
+
 New properties start as drafts and require completed, categorized ownership evidence before `POST /properties/:id/submit` sends them for review. Documents accept PDF, JPEG, or PNG up to 5,000,000 bytes each. Existing property statuses are preserved by the migration. See [property ownership and submission](docs/property-ownership.md) for the API sequence, storage access, and rollout.
 
 ## Account endpoints
@@ -61,6 +63,8 @@ All paths below are under `/api/v1`.
 | GET/PATCH | /properties/:id | Read or update a property, subject to ownership and role checks |
 | PATCH | /properties/:id/review | Administrator review status and note |
 | PATCH | /properties/:id/manager | Assign an active property manager |
+| PATCH | /properties/:id/inspection-consent | Owner answers, or the assigned manager or an administrator records the owner's answer with a note |
+| POST | /properties/:id/inspection-consent/request | Manager or administrator asks the owner for inspection consent |
 | POST | /properties/:id/files | Begin a signed Supabase Storage upload |
 | POST | /properties/:id/files/:fileId/complete | Verify uploaded bytes and attach the file |
 | GET | /properties/:id/files/:fileId/url | Short-lived photo or document URL; optional `download=true/false` |
@@ -78,11 +82,13 @@ All paths below are under `/api/v1`.
 | POST | /maintenance/:id/evidence/:evidenceId/complete | Verify uploaded bytes and publish evidence |
 | GET | /maintenance/:id/evidence/:evidenceId/url | Short-lived evidence URL for authorized request viewers |
 | DELETE | /maintenance/:id/evidence/:evidenceId | Remove an authorized upload before closeout |
-| GET/POST | /inspections | Role-scoped list or administrator scheduling |
+| GET/POST | /inspections | Role-scoped list, or scheduling by the assigned manager or an administrator (needs owner consent) |
+| GET | /inspections/inspectors | Active inspectors, for the manager or administrator picking one |
 | GET | /inspections/:id | Read an authorized inspection |
-| PATCH | /inspections/:id/schedule | Administrator rescheduling or reassignment before the visit starts |
-| POST | /inspections/:id/cancel | Administrator cancellation of an open inspection |
-| POST | /inspections/:id/start | Assigned inspector starts the visit |
+| PATCH | /inspections/:id/schedule | Manager or administrator rescheduling or reassignment before the visit starts; a new date clears access confirmation |
+| POST | /inspections/:id/cancel | Manager or administrator cancellation of an open inspection |
+| POST | /inspections/:id/access | Manager or administrator confirms who controls access (and, for occupied properties, that the occupant authorised it) |
+| POST | /inspections/:id/start | Assigned inspector starts the visit, once access is confirmed |
 | POST | /inspections/:id/complete | Assigned inspector completes the visit |
 | POST | /inspections/:id/report | Assigned inspector submits the final report and findings |
 | POST | /inspections/:id/evidence | Begin an inspector evidence upload |

@@ -1,9 +1,11 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException, ServiceUnavailableException } from '@nestjs/common'
-import { OwnershipDocumentType, Prisma, PropertyFilePurpose, PropertyFileStatus, PropertyStatus, UserRole, UserStatus } from '@prisma/client'
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException, ServiceUnavailableException } from '@nestjs/common'
+import { InspectionConsent, InspectionStatus, ManagerTaskStatus, OwnershipDocumentType, Prisma, PropertyFilePurpose, PropertyFileStatus, PropertyStatus, UserRole, UserStatus } from '@prisma/client'
 import { randomUUID } from 'node:crypto'
 import { PrismaService } from '../../database/prisma.service'
 import { AuthenticatedRequest } from '../../common/types/request-with-user'
-import { AssignManagerDto, CreatePropertyDto, ReviewPropertyDto, StartPropertyUploadDto, UpdatePropertyDto } from './dto/property.dto'
+import { addBusinessDays } from '../../common/business-days'
+import { AssignManagerDto, CreatePropertyDto, RecordInspectionConsentDto, ReviewPropertyDto, StartPropertyUploadDto, UpdatePropertyDto } from './dto/property.dto'
+import { inspectionReadiness } from './inspection-readiness'
 import { SupabaseStorageService } from '../storage/supabase-storage.service'
 import { fileSignature } from '../storage/file-signature'
 import { WorkflowNotifier } from '../notifications/workflow-notifier.service'
@@ -23,9 +25,15 @@ const REVIEW_TRANSITIONS: Record<PropertyStatus, PropertyStatus[]> = {
   [PropertyStatus.APPROVED]: [PropertyStatus.CHANGES_REQUESTED],
 }
 
+// Marks the task the system raises when a property is ready for inspection.
+const COORDINATION_TASK_KIND = 'INSPECTION_COORDINATION'
+const openInspectionStatuses = [InspectionStatus.SCHEDULED, InspectionStatus.IN_PROGRESS, InspectionStatus.COMPLETED]
+const openTaskStatuses = [ManagerTaskStatus.OPEN, ManagerTaskStatus.IN_PROGRESS]
+
 const propertyInclude = {
   owner: { select: { id: true, email: true, profile: { select: { firstName: true, lastName: true } } } },
   manager: { select: { id: true, email: true, profile: { select: { firstName: true, lastName: true } } } },
+  inspections: { where: { status: { in: openInspectionStatuses } }, select: { id: true, status: true, scheduledAt: true, completedAt: true, accessConfirmedAt: true }, take: 1 },
   files: { where: { status: PropertyFileStatus.READY }, select: { id: true, purpose: true, ownershipDocumentType: true, originalName: true, contentType: true, sizeBytes: true, isCover: true, createdAt: true } },
 } satisfies Prisma.PropertyInclude
 
@@ -66,14 +74,43 @@ export class PropertiesService {
 
   list(actor: Actor) {
     const where: Prisma.PropertyWhereInput = actor.role === UserRole.ADMIN ? { status: { not: PropertyStatus.DRAFT } } : actor.role === UserRole.OWNER ? { ownerId: actor.sub } : actor.role === UserRole.PROPERTY_MANAGER ? { managerId: actor.sub, status: { not: PropertyStatus.DRAFT } } : { id: '__none__' }
-    return this.prisma.property.findMany({ where, include: propertyInclude, orderBy: { createdAt: 'desc' } })
+    return this.prisma.property.findMany({ where, include: propertyInclude, orderBy: { createdAt: 'desc' } }).then((rows) => rows.map((row) => this.withReadiness(row)))
   }
 
-  get(id: string, actor: Actor) { return this.accessible(id, actor) }
+  async get(id: string, actor: Actor) { return this.withReadiness(await this.accessible(id, actor)) }
+
+  // Tells staff where a property waiting for inspection stands and who acts next.
+  private withReadiness<T extends Prisma.PropertyGetPayload<{ include: typeof propertyInclude }>>(property: T) {
+    return { ...property, inspectionReadiness: inspectionReadiness(property, property.inspections?.[0]) }
+  }
+
+  // Moving away from consent while a visit is booked would leave staff entering without authority.
+  private assertConsentCanChange(property: Prisma.PropertyGetPayload<{ include: typeof propertyInclude }>, next: InspectionConsent) {
+    if (next !== InspectionConsent.GRANTED && property.inspectionConsent === InspectionConsent.GRANTED && property.inspections?.some((visit) => visit.status === InspectionStatus.SCHEDULED)) {
+      throw new ConflictException('An inspection is already scheduled. Ask your property manager to cancel it before withdrawing consent.')
+    }
+  }
+
+  // Raises the "arrange the inspection" task for the property's manager, once.
+  private async ensureCoordinationTask(tx: Prisma.TransactionClient, property: { id: string; managerId: string | null }, actor: Actor) {
+    if (!property.managerId) return false
+    await tx.managerTask.updateMany({ where: { propertyId: property.id, kind: COORDINATION_TASK_KIND, status: { in: openTaskStatuses } }, data: { managerId: property.managerId } })
+    const open = await tx.managerTask.findFirst({ where: { propertyId: property.id, kind: COORDINATION_TASK_KIND, status: { in: openTaskStatuses } }, select: { id: true } })
+    if (open) return false
+    const task = await tx.managerTask.create({ data: {
+      propertyId: property.id, managerId: property.managerId, createdById: actor.sub, kind: COORDINATION_TASK_KIND,
+      title: 'Arrange the property inspection',
+      description: 'Confirm the owner has authorised the inspection, agree a date and access arrangements, then assign an inspector.',
+      dueAt: addBusinessDays(new Date(), 1),
+    } })
+    await tx.auditEvent.create({ data: { actorId: actor.sub, actorRole: actor.role, action: 'MANAGER_TASK_CREATED', entityType: 'TASK', entityId: task.id, summary: 'Inspection coordination task created' } })
+    return true
+  }
 
   create(dto: CreatePropertyDto, actor: Actor) {
     if (actor.role !== UserRole.OWNER) throw new ForbiddenException('Only owners can submit properties')
-    return this.prisma.property.create({ data: { ...this.fields(dto), ownerId: actor.sub, status: PropertyStatus.DRAFT, ownershipProofRequired: true }, include: propertyInclude })
+    const consent = dto.inspectionConsent ? { inspectionConsent: dto.inspectionConsent, inspectionConsentAt: new Date(), inspectionConsentById: actor.sub } : {}
+    return this.prisma.property.create({ data: { ...this.fields(dto), ...consent, ownerId: actor.sub, status: PropertyStatus.DRAFT, ownershipProofRequired: true }, include: propertyInclude })
   }
 
   async update(id: string, dto: UpdatePropertyDto, actor: Actor) {
@@ -81,12 +118,19 @@ export class PropertiesService {
       const existing = await this.lockedProperty(id, actor, tx, true)
       if (existing.status === PropertyStatus.APPROVED && actor.role !== UserRole.ADMIN) throw new ForbiddenException('Contact an administrator to change an approved property')
       const fields = this.fields(dto)
+      // Consent is saved on its own so answering it never sends the property back to draft.
+      let consent: Prisma.PropertyUpdateInput = {}
+      if (dto.inspectionConsent && dto.inspectionConsent !== existing.inspectionConsent) {
+        if (actor.role !== UserRole.OWNER) throw new ForbiddenException('Staff record the owner consent with a note')
+        this.assertConsentCanChange(existing, dto.inspectionConsent)
+        consent = { inspectionConsent: dto.inspectionConsent, inspectionConsentAt: new Date(), inspectionConsentBy: { connect: { id: actor.sub } }, inspectionConsentNote: null }
+      }
       const unchanged = Object.entries(fields).every(([key, value]) => {
         const current = existing[key as keyof typeof existing]
         return value instanceof Date ? current instanceof Date && value.getTime() === current.getTime() : current === value
       })
-      if (unchanged) return existing
-      return tx.property.update({ where: { id }, data: { ...fields, status: existing.ownershipProofRequired ? PropertyStatus.DRAFT : PropertyStatus.SUBMITTED, reviewNote: null }, include: propertyInclude })
+      if (unchanged) return Object.keys(consent).length ? tx.property.update({ where: { id }, data: consent, include: propertyInclude }) : existing
+      return tx.property.update({ where: { id }, data: { ...fields, ...consent, status: existing.ownershipProofRequired ? PropertyStatus.DRAFT : PropertyStatus.SUBMITTED, reviewNote: null }, include: propertyInclude })
     }, PROPERTY_TRANSACTION_OPTIONS)
   }
 
@@ -114,12 +158,15 @@ export class PropertiesService {
       if (dto.status === PropertyStatus.SUBMITTED || dto.status === PropertyStatus.DRAFT) throw new BadRequestException('Invalid review status')
       if (!REVIEW_TRANSITIONS[existing.status].includes(dto.status)) throw new BadRequestException(`Cannot move a property from ${existing.status.toLowerCase().replaceAll('_', ' ')} to ${dto.status.toLowerCase().replaceAll('_', ' ')}`)
       if (dto.status !== PropertyStatus.CHANGES_REQUESTED) this.requireOwnershipProof(existing)
-      const property = await tx.property.update({ where: { id }, data: { status: dto.status, reviewNote: dto.reviewNote?.trim() || null }, include: propertyInclude })
+      const ready = dto.status === PropertyStatus.INSPECTION_PENDING
+      const property = await tx.property.update({ where: { id }, data: { status: dto.status, reviewNote: dto.reviewNote?.trim() || null, ...(ready ? { inspectionReadyAt: new Date() } : {}) }, include: propertyInclude })
+      if (ready) await this.ensureCoordinationTask(tx, property, actor)
       await tx.auditEvent.create({ data: { actorId: actor.sub, actorRole: actor.role, action: 'PROPERTY_REVIEWED', entityType: 'PROPERTY', entityId: id, summary: `Administrator moved property to ${dto.status.toLowerCase().replaceAll('_', ' ')}` } })
       return property
     }, PROPERTY_TRANSACTION_OPTIONS)
     void this.notifier.propertyReviewed(id, actor.sub)
-    return result
+    if (dto.status === PropertyStatus.INSPECTION_PENDING) void this.notifier.inspectionCoordinationNeeded(id, actor.sub)
+    return this.withReadiness(result)
   }
 
   async assignManager(id: string, dto: AssignManagerDto, actor: Actor) {
@@ -132,11 +179,48 @@ export class PropertiesService {
         if (!manager || manager.role !== UserRole.PROPERTY_MANAGER || manager.status !== UserStatus.ACTIVE) throw new BadRequestException('Choose an active property manager')
       }
       const property = await tx.property.update({ where: { id }, data: { managerId: dto.managerId || null }, include: propertyInclude })
+      if (dto.managerId && property.status === PropertyStatus.INSPECTION_PENDING) await this.ensureCoordinationTask(tx, property, actor)
       await tx.auditEvent.create({ data: { actorId: actor.sub, actorRole: actor.role, action: 'PROPERTY_MANAGER_ASSIGNED', entityType: 'PROPERTY', entityId: id, summary: dto.managerId ? 'Administrator assigned a property manager' : 'Administrator removed the property manager' } })
       return property
     }, PROPERTY_TRANSACTION_OPTIONS)
     if (dto.managerId) void this.notifier.propertyManagerAssigned(id, actor.sub)
-    return result
+    if (dto.managerId && result.status === PropertyStatus.INSPECTION_PENDING) void this.notifier.inspectionCoordinationNeeded(id, actor.sub)
+    return this.withReadiness(result)
+  }
+
+  // The owner answers for themselves. The assigned manager or an admin may record
+  // the answer the owner gave them, which needs a note saying how it was given.
+  async recordInspectionConsent(id: string, dto: RecordInspectionConsentDto, actor: Actor) {
+    const note = dto.note?.trim() || null
+    const onBehalf = actor.role !== UserRole.OWNER
+    if (onBehalf && (!note || note.length < 10)) throw new BadRequestException('Say how and when the owner gave this answer (at least 10 characters)')
+    let changed = false
+    const result = await this.prisma.$transaction(async (tx) => {
+      const property = await this.lockedProperty(id, actor, tx)
+      if (property.inspectionConsent === dto.response) return property
+      this.assertConsentCanChange(property, dto.response)
+      const updated = await tx.property.update({ where: { id }, data: { inspectionConsent: dto.response, inspectionConsentAt: new Date(), inspectionConsentBy: { connect: { id: actor.sub } }, inspectionConsentNote: onBehalf ? note : null }, include: propertyInclude })
+      await tx.auditEvent.create({ data: { actorId: actor.sub, actorRole: actor.role, action: 'PROPERTY_INSPECTION_CONSENT_RECORDED', entityType: 'PROPERTY', entityId: id, summary: `${onBehalf ? 'Staff recorded the owner answer' : 'Owner answered'}: ${dto.response === InspectionConsent.GRANTED ? 'consents to inspection' : 'wants to discuss the inspection first'}` } })
+      changed = true
+      return updated
+    }, PROPERTY_TRANSACTION_OPTIONS)
+    if (changed) void this.notifier.inspectionConsentRecorded(id, actor.sub)
+    return this.withReadiness(result)
+  }
+
+  // Staff ask the owner for consent. The first request starts the follow-up clock.
+  async requestInspectionConsent(id: string, actor: Actor) {
+    if (actor.role !== UserRole.ADMIN && actor.role !== UserRole.PROPERTY_MANAGER) throw new ForbiddenException()
+    const result = await this.prisma.$transaction(async (tx) => {
+      const property = await this.lockedProperty(id, actor, tx)
+      if (property.status !== PropertyStatus.INSPECTION_PENDING && property.status !== PropertyStatus.APPROVED) throw new BadRequestException('Consent can be requested once the property is ready for inspection')
+      if (property.inspectionConsent === InspectionConsent.GRANTED) throw new ConflictException('The owner has already consented to an inspection')
+      const updated = await tx.property.update({ where: { id }, data: property.inspectionConsentRequestedAt ? {} : { inspectionConsentRequestedAt: new Date() }, include: propertyInclude })
+      await tx.auditEvent.create({ data: { actorId: actor.sub, actorRole: actor.role, action: 'PROPERTY_INSPECTION_CONSENT_REQUESTED', entityType: 'PROPERTY', entityId: id, summary: 'Staff asked the owner for inspection consent' } })
+      return updated
+    }, PROPERTY_TRANSACTION_OPTIONS)
+    void this.notifier.inspectionConsentRequested(id, actor.sub)
+    return this.withReadiness(result)
   }
 
   async startUpload(id: string, dto: StartPropertyUploadDto, actor: Actor) {

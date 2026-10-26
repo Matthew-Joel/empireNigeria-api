@@ -1,5 +1,5 @@
 import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common'
-import { InspectionEvidenceStatus, InspectionStatus, PropertyStatus, UserRole, UserStatus } from '@prisma/client'
+import { InspectionConsent, InspectionEvidenceStatus, InspectionStatus, PropertyOccupancy, PropertyStatus, UserRole, UserStatus } from '@prisma/client'
 import { InspectionsService } from './inspections.service'
 
 const owner = { sub: 'owner', email: 'owner@example.com', role: UserRole.OWNER }
@@ -10,7 +10,8 @@ const record = {
   id: 'visit', propertyId: 'home', inspectorId: inspector.sub, status: InspectionStatus.SCHEDULED,
   purpose: 'Routine visit', summary: 'Inspect the property condition', scheduledAt: new Date('2030-01-01'),
   completedAt: null, createdAt: new Date(), updatedAt: new Date(),
-  property: { id: 'home', name: 'Home', address: '1 Main Street', city: 'Lagos', state: 'Lagos', ownerId: owner.sub, managerId: manager.sub, owner: { email: owner.email } },
+  accessConfirmedAt: new Date(), accessContact: 'Caretaker', occupantAuthorised: false, accessNote: null,
+  property: { id: 'home', name: 'Home', address: '1 Main Street', city: 'Lagos', state: 'Lagos', ownerId: owner.sub, managerId: manager.sub, occupancyStatus: PropertyOccupancy.VACANT, inspectionConsent: InspectionConsent.GRANTED, inspectionConsentAt: new Date(), owner: { email: owner.email } },
   inspector: { id: inspector.sub, email: inspector.email, profile: null },
   report: { id: 'report', submittedAt: new Date(), overview: 'The property condition is good.', recommendations: ['Keep it clean'], findings: [] },
   evidence: [{ id: 'evidence', originalName: 'photo.png', type: 'PHOTO', caption: 'Front', completedAt: new Date(), createdAt: new Date(), contentType: 'image/png', sizeBytes: 20 }],
@@ -19,8 +20,9 @@ const record = {
 function setup() {
   const prisma = {
     inspection: { findUnique: jest.fn().mockResolvedValue(record), findMany: jest.fn().mockResolvedValue([record]), findFirst: jest.fn().mockResolvedValue(null), create: jest.fn().mockResolvedValue(record), update: jest.fn(), updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
-    property: { findUnique: jest.fn().mockResolvedValue({ status: PropertyStatus.APPROVED }) },
-    user: { findUnique: jest.fn().mockResolvedValue({ role: UserRole.INSPECTOR, status: UserStatus.ACTIVE }) },
+    property: { findUnique: jest.fn().mockResolvedValue({ status: PropertyStatus.APPROVED, managerId: manager.sub, inspectionConsent: InspectionConsent.GRANTED }) },
+    managerTask: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+    user: { findUnique: jest.fn().mockResolvedValue({ role: UserRole.INSPECTOR, status: UserStatus.ACTIVE }), findMany: jest.fn().mockResolvedValue([]) },
     inspectionEvidence: { count: jest.fn().mockResolvedValue(0), create: jest.fn().mockResolvedValue({ id: 'evidence' }), findFirst: jest.fn(), delete: jest.fn(), update: jest.fn() },
     auditEvent: { create: jest.fn() },
     $queryRaw: jest.fn().mockResolvedValue([]),
@@ -28,7 +30,7 @@ function setup() {
   }
   prisma.$transaction.mockImplementation(async (work: (tx: unknown) => Promise<unknown>) => work(prisma))
   const storage = { signUpload: jest.fn().mockResolvedValue('https://storage.example/upload'), download: jest.fn(), move: jest.fn(), signedDownload: jest.fn(), remove: jest.fn() }
-  const notifier = { inspectionScheduled: jest.fn(), inspectionRescheduled: jest.fn(), inspectionCancelled: jest.fn(), inspectionProgress: jest.fn(), inspectionReportReady: jest.fn() }
+  const notifier = { inspectionScheduled: jest.fn(), inspectionRescheduled: jest.fn(), inspectionCancelled: jest.fn(), inspectionProgress: jest.fn(), inspectionReportReady: jest.fn(), inspectionAccessConfirmed: jest.fn() }
   return { service: new InspectionsService(prisma as never, storage as never, notifier as never), prisma, storage, notifier }
 }
 
@@ -73,6 +75,80 @@ describe('InspectionsService', () => {
     prisma.inspection.updateMany.mockResolvedValue({ count: 0 })
     await expect(service.submitReport('visit', dto, inspector)).rejects.toBeInstanceOf(ConflictException)
     expect(notifier.inspectionReportReady).not.toHaveBeenCalled()
+  })
+
+  it('will not schedule until the owner has consented', async () => {
+    const dto = { propertyId: 'home', inspectorId: 'inspector', purpose: 'Routine', summary: 'Inspect the home', scheduledAt: '2030-01-01T00:00:00Z' }
+    const { service, prisma, notifier } = setup()
+    for (const inspectionConsent of [InspectionConsent.NOT_RECORDED, InspectionConsent.DISCUSSION_REQUESTED]) {
+      prisma.property.findUnique.mockResolvedValue({ status: PropertyStatus.INSPECTION_PENDING, managerId: manager.sub, inspectionConsent })
+      await expect(service.schedule(dto, admin)).rejects.toBeInstanceOf(ConflictException)
+      await expect(service.schedule(dto, manager)).rejects.toBeInstanceOf(ConflictException)
+    }
+    expect(prisma.inspection.create).not.toHaveBeenCalled()
+    expect(notifier.inspectionScheduled).not.toHaveBeenCalled()
+  })
+
+  it('lets only the assigned manager, or an admin, schedule and closes the coordination task', async () => {
+    const dto = { propertyId: 'home', inspectorId: 'inspector', purpose: 'Routine', summary: 'Inspect the home', scheduledAt: '2030-01-01T00:00:00Z' }
+    const { service, prisma } = setup()
+    await expect(service.schedule(dto, { ...manager, sub: 'other-manager' })).rejects.toBeInstanceOf(NotFoundException)
+    await expect(service.schedule(dto, owner)).rejects.toThrow()
+    await service.schedule(dto, manager)
+    expect(prisma.managerTask.updateMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ propertyId: 'home', kind: 'INSPECTION_COORDINATION' }) }))
+    expect(prisma.auditEvent.create).toHaveBeenCalledWith({ data: expect.objectContaining({ action: 'INSPECTION_SCHEDULED', summary: 'Property manager scheduled an inspection' }) })
+  })
+
+  it('confirms access, and insists the occupant authorised an occupied property', async () => {
+    const { service, prisma, notifier } = setup()
+    prisma.inspection.findUnique.mockResolvedValue({ ...record, accessConfirmedAt: null, property: { ...record.property, occupancyStatus: PropertyOccupancy.OCCUPIED } })
+    await expect(service.confirmAccess('visit', { contact: 'Tenant Ada', occupantAuthorised: false }, manager)).rejects.toBeInstanceOf(BadRequestException)
+    expect(prisma.inspection.updateMany).not.toHaveBeenCalled()
+    await service.confirmAccess('visit', { contact: 'Tenant Ada', occupantAuthorised: true, note: 'Weekday mornings' }, manager)
+    expect(prisma.inspection.updateMany).toHaveBeenCalledWith({ where: { id: 'visit', status: InspectionStatus.SCHEDULED }, data: expect.objectContaining({ accessContact: 'Tenant Ada', occupantAuthorised: true, accessConfirmedById: manager.sub }) })
+    expect(notifier.inspectionAccessConfirmed).toHaveBeenCalledWith('visit', manager.sub)
+    await expect(service.confirmAccess('visit', { contact: 'Ada', occupantAuthorised: true }, owner)).rejects.toThrow()
+    prisma.inspection.findUnique.mockResolvedValue({ ...record, status: InspectionStatus.IN_PROGRESS })
+    await expect(service.confirmAccess('visit', { contact: 'Ada', occupantAuthorised: true }, admin)).rejects.toBeInstanceOf(ConflictException)
+  })
+
+  it('stops the inspector starting before access is confirmed', async () => {
+    const { service, prisma, notifier } = setup()
+    prisma.inspection.findUnique.mockResolvedValue({ ...record, accessConfirmedAt: null })
+    await expect(service.start('visit', inspector)).rejects.toBeInstanceOf(ConflictException)
+    expect(prisma.inspection.updateMany).not.toHaveBeenCalled()
+    prisma.inspection.findUnique.mockResolvedValue(record)
+    await service.start('visit', inspector)
+    expect(notifier.inspectionProgress).toHaveBeenCalledWith('visit', 'started', inspector.sub)
+  })
+
+  it('clears access when the date moves, but not when only the inspector changes', async () => {
+    const { service, prisma } = setup()
+    await service.reschedule('visit', { scheduledAt: '2031-02-02T00:00:00Z' }, manager)
+    expect(prisma.inspection.update).toHaveBeenLastCalledWith({ where: { id: 'visit' }, data: expect.objectContaining({ accessConfirmedAt: null, occupantAuthorised: false, accessContact: null }) })
+    await service.reschedule('visit', { inspectorId: 'inspector', scheduledAt: record.scheduledAt.toISOString() }, admin)
+    const data = prisma.inspection.update.mock.calls.at(-1)?.[0].data
+    expect(data).not.toHaveProperty('accessConfirmedAt')
+  })
+
+  it('shows the visit and report due dates and the consent and access state', async () => {
+    const { service, prisma } = setup()
+    const scheduled = await service.get('visit', manager)
+    expect(scheduled.consent.status).toBe(InspectionConsent.GRANTED)
+    expect(scheduled.access.contact).toBe('Caretaker')
+    expect(scheduled.visitDueAt).toBeInstanceOf(Date)
+    expect(scheduled.reportDueAt).toBeNull()
+    const finished = new Date('2030-01-02T10:00:00Z')
+    prisma.inspection.findUnique.mockResolvedValue({ ...record, status: InspectionStatus.COMPLETED, completedAt: finished })
+    const completed = await service.get('visit', manager)
+    expect(completed.visitDueAt).toBeNull()
+    expect(completed.reportDueAt).toEqual(new Date('2030-01-03T10:00:00Z'))
+  })
+
+  it('lists active inspectors for staff to choose from', async () => {
+    const { service, prisma } = setup()
+    await service.inspectors()
+    expect(prisma.user.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { role: UserRole.INSPECTOR, status: UserStatus.ACTIVE } }))
   })
 
   it('prevents duplicate active inspections and invalid status transitions', async () => {

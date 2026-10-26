@@ -1,16 +1,18 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common'
-import { InspectionEvidenceStatus, InspectionEvidenceType, InspectionStatus, Prisma, PropertyStatus, UserRole, UserStatus } from '@prisma/client'
+import { InspectionConsent, InspectionEvidenceStatus, InspectionEvidenceType, InspectionStatus, ManagerTaskStatus, Prisma, PropertyOccupancy, PropertyStatus, UserRole, UserStatus } from '@prisma/client'
 import { randomUUID } from 'node:crypto'
 import { AuthenticatedRequest } from '../../common/types/request-with-user'
 import { PrismaService } from '../../database/prisma.service'
 import { WorkflowNotifier } from '../notifications/workflow-notifier.service'
 import { fileSignature } from '../storage/file-signature'
 import { SupabaseStorageService } from '../storage/supabase-storage.service'
-import { RescheduleInspectionDto, ScheduleInspectionDto, StartInspectionEvidenceDto, SubmitInspectionReportDto } from './dto/inspection.dto'
+import { addBusinessDays } from '../../common/business-days'
+import { ConfirmInspectionAccessDto, RescheduleInspectionDto, ScheduleInspectionDto, StartInspectionEvidenceDto, SubmitInspectionReportDto } from './dto/inspection.dto'
 
 type Actor = AuthenticatedRequest['user']
 const activeStatuses = [InspectionStatus.SCHEDULED, InspectionStatus.IN_PROGRESS, InspectionStatus.COMPLETED]
 const uploadLifetime = 2 * 60 * 60 * 1000
+const REPORT_DUE_MS = 24 * 60 * 60 * 1000
 
 const inspectionInclude = {
   property: { include: { owner: { select: { email: true } } } },
@@ -45,6 +47,11 @@ export class InspectionsService {
       inspectorRole: 'Field Inspector',
       scheduledAt: record.scheduledAt,
       completedAt: record.completedAt,
+      occupancyStatus: record.property.occupancyStatus,
+      consent: { status: record.property.inspectionConsent, recordedAt: record.property.inspectionConsentAt },
+      access: { confirmedAt: record.accessConfirmedAt, contact: record.accessContact, occupantAuthorised: record.occupantAuthorised, note: record.accessNote },
+      visitDueAt: record.status === InspectionStatus.SCHEDULED || record.status === InspectionStatus.IN_PROGRESS ? addBusinessDays(record.scheduledAt, 3) : null,
+      reportDueAt: record.status === InspectionStatus.COMPLETED && record.completedAt ? new Date(record.completedAt.getTime() + REPORT_DUE_MS) : null,
       summary: record.summary,
       findings: report?.findings.map((finding) => ({ id: finding.id, area: finding.area, title: finding.title, severity: finding.severity, detail: finding.detail, recommendation: finding.recommendation })) ?? [],
       evidence: canSeeReport ? record.evidence.map((item) => ({ id: item.id, name: item.originalName, type: item.type, caption: item.caption, recordedAt: item.completedAt ?? item.createdAt, contentType: item.contentType, sizeBytes: item.sizeBytes })) : [],
@@ -63,6 +70,12 @@ export class InspectionsService {
       (actor.role === UserRole.INSPECTOR && record.inspectorId === actor.sub)
     if (!allowed) throw new NotFoundException('Inspection not found')
     return record
+  }
+
+  // Admins coordinate any property. A manager only the ones assigned to them,
+  // which accessible() and the schedule lookup enforce.
+  private staff(actor: Actor) {
+    if (actor.role !== UserRole.ADMIN && actor.role !== UserRole.PROPERTY_MANAGER) throw new ForbiddenException()
   }
 
   private assignedInspector(record: InspectionRecord, actor: Actor) {
@@ -92,18 +105,25 @@ export class InspectionsService {
 
   async get(id: string, actor: Actor) { return this.serialize(await this.accessible(id, actor), actor) }
 
+  async inspectors() {
+    return this.prisma.user.findMany({ where: { role: UserRole.INSPECTOR, status: UserStatus.ACTIVE }, select: { id: true, email: true, profile: { select: { firstName: true, lastName: true } } }, orderBy: { email: 'asc' } })
+  }
+
   async schedule(dto: ScheduleInspectionDto, actor: Actor) {
-    if (actor.role !== UserRole.ADMIN) throw new ForbiddenException()
-    const property = await this.prisma.property.findUnique({ where: { id: dto.propertyId }, select: { status: true } })
-    if (!property) throw new NotFoundException('Property not found')
+    this.staff(actor)
+    const property = await this.prisma.property.findUnique({ where: { id: dto.propertyId }, select: { status: true, managerId: true, inspectionConsent: true } })
+    if (!property || (actor.role === UserRole.PROPERTY_MANAGER && property.managerId !== actor.sub)) throw new NotFoundException('Property not found')
     if (property.status !== PropertyStatus.INSPECTION_PENDING && property.status !== PropertyStatus.APPROVED) throw new BadRequestException('Review the property before scheduling an inspection')
+    if (property.inspectionConsent !== InspectionConsent.GRANTED) throw new ConflictException('The owner has not consented to an inspection yet')
     await this.validInspector(dto.inspectorId)
     const scheduledAt = this.futureDate(dto.scheduledAt)
     const existing = await this.prisma.inspection.findFirst({ where: { propertyId: dto.propertyId, status: { in: activeStatuses } }, select: { id: true } })
     if (existing) throw new ConflictException('An active inspection already exists for this property')
     try {
       const record = await this.prisma.inspection.create({ data: { propertyId: dto.propertyId, inspectorId: dto.inspectorId, purpose: dto.purpose.trim(), summary: dto.summary.trim(), scheduledAt } })
-      await this.prisma.auditEvent.create({ data: { actorId: actor.sub, actorRole: actor.role, action: 'INSPECTION_SCHEDULED', entityType: 'INSPECTION', entityId: record.id, summary: 'Administrator scheduled an inspection' } })
+      await this.prisma.auditEvent.create({ data: { actorId: actor.sub, actorRole: actor.role, action: 'INSPECTION_SCHEDULED', entityType: 'INSPECTION', entityId: record.id, summary: `${actor.role === UserRole.ADMIN ? 'Administrator' : 'Property manager'} scheduled an inspection` } })
+      // The coordination task has done its job once a visit is booked.
+      await this.prisma.managerTask.updateMany({ where: { propertyId: dto.propertyId, kind: 'INSPECTION_COORDINATION', status: { in: [ManagerTaskStatus.OPEN, ManagerTaskStatus.IN_PROGRESS] } }, data: { status: ManagerTaskStatus.DONE, completedAt: new Date() } })
       void this.notifier.inspectionScheduled(record.id, actor.sub)
       return this.get(record.id, actor)
     } catch (error) {
@@ -113,29 +133,45 @@ export class InspectionsService {
   }
 
   async reschedule(id: string, dto: RescheduleInspectionDto, actor: Actor) {
-    if (actor.role !== UserRole.ADMIN) throw new ForbiddenException()
+    this.staff(actor)
     const record = await this.accessible(id, actor)
     if (record.status !== InspectionStatus.SCHEDULED) throw new ConflictException('Only scheduled inspections can be changed')
     if (dto.inspectorId) await this.validInspector(dto.inspectorId)
-    await this.prisma.inspection.update({ where: { id }, data: { scheduledAt: this.futureDate(dto.scheduledAt), inspectorId: dto.inspectorId ?? record.inspectorId } })
-    await this.prisma.auditEvent.create({ data: { actorId: actor.sub, actorRole: actor.role, action: 'INSPECTION_RESCHEDULED', entityType: 'INSPECTION', entityId: id, summary: 'Administrator changed an inspection schedule' } })
+    const scheduledAt = this.futureDate(dto.scheduledAt)
+    // A new date means access has to be arranged again.
+    const resetAccess = scheduledAt.getTime() !== record.scheduledAt.getTime() ? { accessConfirmedAt: null, accessConfirmedById: null, accessContact: null, occupantAuthorised: false, accessNote: null } : {}
+    await this.prisma.inspection.update({ where: { id }, data: { scheduledAt, inspectorId: dto.inspectorId ?? record.inspectorId, ...resetAccess } })
+    await this.prisma.auditEvent.create({ data: { actorId: actor.sub, actorRole: actor.role, action: 'INSPECTION_RESCHEDULED', entityType: 'INSPECTION', entityId: id, summary: `${actor.role === UserRole.ADMIN ? 'Administrator' : 'Property manager'} changed an inspection schedule` } })
     void this.notifier.inspectionRescheduled(id, record.inspectorId, actor.sub)
     return this.get(id, actor)
   }
 
   async cancel(id: string, actor: Actor) {
-    if (actor.role !== UserRole.ADMIN) throw new ForbiddenException()
+    this.staff(actor)
     await this.accessible(id, actor)
     const changed = await this.prisma.inspection.updateMany({ where: { id, status: { in: activeStatuses } }, data: { status: InspectionStatus.CANCELLED } })
     if (!changed.count) throw new ConflictException('This inspection cannot be cancelled')
-    await this.prisma.auditEvent.create({ data: { actorId: actor.sub, actorRole: actor.role, action: 'INSPECTION_CANCELLED', entityType: 'INSPECTION', entityId: id, summary: 'Administrator cancelled an inspection' } })
+    await this.prisma.auditEvent.create({ data: { actorId: actor.sub, actorRole: actor.role, action: 'INSPECTION_CANCELLED', entityType: 'INSPECTION', entityId: id, summary: `${actor.role === UserRole.ADMIN ? 'Administrator' : 'Property manager'} cancelled an inspection` } })
     void this.notifier.inspectionCancelled(id, actor.sub)
+    return this.get(id, actor)
+  }
+
+  async confirmAccess(id: string, dto: ConfirmInspectionAccessDto, actor: Actor) {
+    this.staff(actor)
+    const record = await this.accessible(id, actor)
+    if (record.status !== InspectionStatus.SCHEDULED) throw new ConflictException('Access can only be confirmed before the visit starts')
+    if (record.property.occupancyStatus === PropertyOccupancy.OCCUPIED && !dto.occupantAuthorised) throw new BadRequestException('The property is occupied. Confirm the occupant has authorised access.')
+    const changed = await this.prisma.inspection.updateMany({ where: { id, status: InspectionStatus.SCHEDULED }, data: { accessConfirmedAt: new Date(), accessConfirmedById: actor.sub, accessContact: dto.contact.trim(), occupantAuthorised: dto.occupantAuthorised, accessNote: dto.note?.trim() || null } })
+    if (!changed.count) throw new ConflictException('Access can only be confirmed before the visit starts')
+    await this.prisma.auditEvent.create({ data: { actorId: actor.sub, actorRole: actor.role, action: 'INSPECTION_ACCESS_CONFIRMED', entityType: 'INSPECTION', entityId: id, summary: 'Access for the inspection was confirmed' } })
+    void this.notifier.inspectionAccessConfirmed(id, actor.sub)
     return this.get(id, actor)
   }
 
   async start(id: string, actor: Actor) {
     const record = await this.accessible(id, actor)
     this.assignedInspector(record, actor)
+    if (!record.accessConfirmedAt) throw new ConflictException('Access to the property has not been confirmed yet')
     const changed = await this.prisma.inspection.updateMany({ where: { id, status: InspectionStatus.SCHEDULED }, data: { status: InspectionStatus.IN_PROGRESS } })
     if (!changed.count) throw new ConflictException('This inspection cannot be started')
     await this.prisma.auditEvent.create({ data: { actorId: actor.sub, actorRole: actor.role, action: 'INSPECTION_STARTED', entityType: 'INSPECTION', entityId: id, summary: 'Inspector started an inspection' } })

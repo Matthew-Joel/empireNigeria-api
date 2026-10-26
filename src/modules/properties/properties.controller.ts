@@ -5,7 +5,7 @@ import { Roles } from '../../common/decorators/roles.decorator'
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard'
 import { RolesGuard } from '../../common/guards/roles.guard'
 import { AuthenticatedRequest } from '../../common/types/request-with-user'
-import { AssignManagerDto, CreatePropertyDto, ReviewPropertyDto, StartPropertyUploadDto, UpdatePropertyDto } from './dto/property.dto'
+import { AssignManagerDto, CreatePropertyDto, RecordInspectionConsentDto, ReviewPropertyDto, StartPropertyUploadDto, UpdatePropertyDto } from './dto/property.dto'
 import { PropertiesService } from './properties.service'
 
 type Actor = AuthenticatedRequest['user']
@@ -36,6 +36,12 @@ export class PropertiesController {
 
   @Patch(':id/manager')
   assignManager(@Param('id', ParseUUIDPipe) id: string, @Body() dto: AssignManagerDto, @CurrentUser() actor: Actor) { return this.properties.assignManager(id, dto, actor) }
+
+  @Patch(':id/inspection-consent')
+  recordInspectionConsent(@Param('id', ParseUUIDPipe) id: string, @Body() dto: RecordInspectionConsentDto, @CurrentUser() actor: Actor) { return this.properties.recordInspectionConsent(id, dto, actor) }
+
+  @Post(':id/inspection-consent/request')
+  requestInspectionConsent(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() actor: Actor) { return this.properties.requestInspectionConsent(id, actor) }
 
   @Post(':id/files')
   startUpload(@Param('id', ParseUUIDPipe) id: string, @Body() dto: StartPropertyUploadDto, @CurrentUser() actor: Actor) { return this.properties.startUpload(id, dto, actor) }

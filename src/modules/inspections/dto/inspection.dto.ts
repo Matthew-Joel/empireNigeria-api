@@ -1,6 +1,6 @@
 import { InspectionEvidenceType, InspectionFindingSeverity } from '@prisma/client'
 import { Type } from 'class-transformer'
-import { ArrayMaxSize, ArrayMinSize, IsArray, IsDateString, IsEnum, IsInt, IsOptional, IsString, IsUUID, Length, Max, MaxLength, Min, ValidateNested } from 'class-validator'
+import { ArrayMaxSize, ArrayMinSize, IsArray, IsBoolean, IsDateString, IsEnum, IsInt, IsOptional, IsString, IsUUID, Length, Max, MaxLength, Min, ValidateNested } from 'class-validator'
 
 export class ScheduleInspectionDto {
   @IsUUID() propertyId!: string
@@ -13,6 +13,12 @@ export class ScheduleInspectionDto {
 export class RescheduleInspectionDto {
   @IsOptional() @IsUUID() inspectorId?: string
   @IsDateString() scheduledAt!: string
+}
+
+export class ConfirmInspectionAccessDto {
+  @IsString() @Length(2, 160) contact!: string
+  @IsBoolean() occupantAuthorised!: boolean
+  @IsOptional() @IsString() @MaxLength(1000) note?: string
 }
 
 export class InspectionFindingDto {

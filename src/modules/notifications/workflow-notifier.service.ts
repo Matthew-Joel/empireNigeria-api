@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
-import { MaintenanceStatus, PropertyStatus, UserRole, UserStatus } from '@prisma/client'
+import { InspectionConsent, MaintenanceStatus, PropertyStatus, UserRole, UserStatus } from '@prisma/client'
 import { PrismaService } from '../../database/prisma.service'
 import { cleanLine, EmailContent, renderEmail } from './email-templates'
 import { NotificationsService } from './notifications.service'
@@ -128,7 +128,11 @@ export class WorkflowNotifier {
       const wording: Partial<Record<PropertyStatus, { subject: string; heading: string; intro: string }>> = {
         [PropertyStatus.APPROVED]: { subject: 'approved', heading: 'Your property has been approved', intro: `${property.name} passed review and is now approved.` },
         [PropertyStatus.CHANGES_REQUESTED]: { subject: 'changes requested', heading: 'Changes are needed on your property', intro: `An administrator reviewed ${property.name} and asked for changes. Update the details and submit it again.` },
-        [PropertyStatus.INSPECTION_PENDING]: { subject: 'inspection pending', heading: 'Your property is moving to inspection', intro: `${property.name} passed document review. An inspection will be scheduled next.` },
+        [PropertyStatus.INSPECTION_PENDING]: {
+          subject: 'inspection pending',
+          heading: 'Your property is moving to inspection',
+          intro: `${property.name} passed document review. An inspection will be scheduled next.${property.inspectionConsent === InspectionConsent.GRANTED ? '' : ' We need your permission first: open the property and tell us whether you consent to the inspection. We will agree a date and access with you before anyone visits.'}`,
+        },
       }
       const copy = wording[property.status]
       // Other statuses, such as under review, are too minor to email.
@@ -154,6 +158,83 @@ export class WorkflowNotifier {
         intro: `${property.manager.email} now manages ${property.name}.`,
         details: [['Property', property.name], ['Address', `${property.address}, ${property.city}, ${property.state}`]],
         cta: { label: 'View property', paths: propertyPaths(property.id) },
+      }, actorId)
+    })
+  }
+
+  // Inspection coordination
+
+  inspectionCoordinationNeeded(propertyId: string, actorId?: string) {
+    return this.run('inspection coordination needed', async () => {
+      const property = await this.property(propertyId)
+      if (!property) return
+      const outstanding = property.inspectionConsent === InspectionConsent.GRANTED ? 'The owner has already consented.' : 'The owner has not consented yet, so ask for consent first.'
+      const details: Array<[string, string]> = [['Property', property.name], ['Address', `${property.address}, ${property.city}, ${property.state}`]]
+      if (property.manager) {
+        await this.deliver([property.manager], `Arrange the inspection: ${property.name}`, {
+          heading: 'A property is ready for inspection',
+          intro: `${property.name} is ready for inspection. Confirm the owner’s consent, agree a date and access arrangements, then assign an inspector. ${outstanding}`,
+          details,
+          cta: { label: 'Open property', paths: propertyPaths(property.id) },
+        }, actorId)
+        return
+      }
+      // Nobody is assigned to coordinate, so the admins have to pick a manager.
+      await this.deliver(await this.admins(), `Assign a manager to arrange the inspection: ${property.name}`, {
+        heading: 'A property needs a manager',
+        intro: `${property.name} is ready for inspection but has no property manager. Assign one so the inspection can be arranged.`,
+        details,
+        cta: { label: 'Open property', paths: propertyPaths(property.id) },
+      }, actorId)
+    })
+  }
+
+  inspectionConsentRequested(propertyId: string, actorId?: string) {
+    return this.run('inspection consent requested', async () => {
+      const property = await this.property(propertyId)
+      if (!property) return
+      await this.deliver([property.owner], `Your permission is needed: ${property.name}`, {
+        heading: 'Please tell us if we may inspect your property',
+        intro: `Before we visit ${property.name} we need your permission. Open the property and choose whether you consent, or ask to talk it through first. Consent is not permission to enter at any time: we will agree a date and how to get in with you before the visit.`,
+        details: [['Property', property.name], ['Address', `${property.address}, ${property.city}, ${property.state}`]],
+        cta: { label: 'Give your answer', paths: propertyPaths(property.id) },
+      }, actorId)
+    })
+  }
+
+  inspectionConsentRecorded(propertyId: string, actorId?: string) {
+    return this.run('inspection consent recorded', async () => {
+      const property = await this.property(propertyId)
+      if (!property) return
+      const granted = property.inspectionConsent === InspectionConsent.GRANTED
+      const note: Array<[string, string]> = property.inspectionConsentNote ? [['How it was given', property.inspectionConsentNote]] : []
+      await this.deliver([property.manager, ...(property.manager ? [] : await this.admins())], `Inspection ${granted ? 'consent given' : 'discussion requested'}: ${property.name}`, {
+        heading: granted ? 'The owner consented to an inspection' : 'The owner wants to discuss the inspection first',
+        intro: granted ? `You can now schedule the inspection of ${property.name} and confirm access.` : `Contact the owner of ${property.name} to explain the inspection and agree how to proceed.`,
+        details: [['Property', property.name], ['Owner', property.owner.email], ...note],
+        cta: { label: 'Open property', paths: propertyPaths(property.id) },
+      }, actorId)
+      // The owner gets a receipt when staff recorded the answer for them.
+      if (property.inspectionConsentById && property.inspectionConsentById !== property.owner.id) {
+        await this.deliver([property.owner], `Inspection ${granted ? 'consent' : 'discussion'} recorded: ${property.name}`, {
+          heading: 'We recorded your answer about the inspection',
+          intro: granted ? `We recorded that you consent to an inspection of ${property.name}. We will agree a date and access with you before the visit.` : `We recorded that you want to talk about the inspection of ${property.name} first. Someone will contact you.`,
+          details: [['Property', property.name]],
+          cta: { label: 'View property', paths: propertyPaths(property.id) },
+        }, actorId)
+      }
+    })
+  }
+
+  inspectionAccessConfirmed(inspectionId: string, actorId?: string) {
+    return this.run('inspection access confirmed', async () => {
+      const visit = await this.inspection(inspectionId)
+      if (!visit) return
+      await this.deliver([visit.inspector, visit.property.owner], `Access confirmed: ${visit.property.name}`, {
+        heading: 'Access for the inspection is confirmed',
+        intro: `Access to ${visit.property.name} is arranged for the inspection on ${this.date(visit.scheduledAt)}.`,
+        details: [['Property', visit.property.name], ['When', this.date(visit.scheduledAt)], ['Access through', visit.accessContact ?? '']],
+        cta: { label: 'View inspection', paths: inspectionPaths(visit.id) },
       }, actorId)
     })
   }

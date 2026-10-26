@@ -1,7 +1,9 @@
 import { IsBoolean, IsDateString, IsEnum, IsIn, IsInt, IsOptional, IsString, Max, MaxLength, Min, MinLength, ValidateIf, IsUUID } from 'class-validator'
-import { OwnershipDocumentType, PropertyFilePurpose, PropertyOccupancy, PropertyStatus } from '@prisma/client'
+import { InspectionConsent, OwnershipDocumentType, PropertyFilePurpose, PropertyOccupancy, PropertyStatus } from '@prisma/client'
 
 const propertyTypes = ['Detached house', 'Apartment', 'Duplex', 'Terrace'] as const
+// NOT_RECORDED is the starting state, never an answer.
+const consentAnswers = [InspectionConsent.GRANTED, InspectionConsent.DISCUSSION_REQUESTED] as const
 
 export class CreatePropertyDto {
   @IsString() @MinLength(2) @MaxLength(160) name!: string
@@ -18,6 +20,7 @@ export class CreatePropertyDto {
   @IsString() @MinLength(5) @MaxLength(30) tenantPhone?: string
   @ValidateIf((value: CreatePropertyDto) => value.occupancyStatus === PropertyOccupancy.OCCUPIED)
   @IsDateString() tenancyStart?: string
+  @IsOptional() @IsIn(consentAnswers) inspectionConsent?: InspectionConsent
 }
 
 export class UpdatePropertyDto extends CreatePropertyDto {}
@@ -25,6 +28,11 @@ export class UpdatePropertyDto extends CreatePropertyDto {}
 export class ReviewPropertyDto {
   @IsEnum(PropertyStatus) status!: PropertyStatus
   @IsOptional() @IsString() @MaxLength(2000) reviewNote?: string
+}
+
+export class RecordInspectionConsentDto {
+  @IsIn(consentAnswers) response!: InspectionConsent
+  @IsOptional() @IsString() @MaxLength(1000) note?: string
 }
 
 export class AssignManagerDto {

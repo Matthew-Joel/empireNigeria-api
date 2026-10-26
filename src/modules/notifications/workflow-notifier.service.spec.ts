@@ -1,5 +1,5 @@
 import { ConfigService } from '@nestjs/config'
-import { MaintenanceStatus, PropertyStatus, UserRole } from '@prisma/client'
+import { InspectionConsent, MaintenanceStatus, PropertyStatus, UserRole } from '@prisma/client'
 import { WorkflowNotifier } from './workflow-notifier.service'
 
 const owner = { id: 'owner', email: 'owner@example.com', role: UserRole.OWNER }
@@ -114,6 +114,60 @@ describe('WorkflowNotifier', () => {
     expect(notifications.sendEmail).toHaveBeenCalledTimes(2)
     prisma.property.findUnique.mockRejectedValue(new Error('db down'))
     await expect(notifier.propertyReviewed('home')).resolves.toBeUndefined()
+  })
+
+  it('asks the owner for consent when the property moves to inspection and consent is missing', async () => {
+    const { notifier, prisma, notifications } = setup()
+    prisma.property.findUnique.mockResolvedValue({ ...property, status: PropertyStatus.INSPECTION_PENDING, inspectionConsent: InspectionConsent.NOT_RECORDED })
+    await notifier.propertyReviewed('home', 'admin')
+    expect(notifications.sendEmail.mock.calls[0][0].html).toContain('We need your permission first')
+    prisma.property.findUnique.mockResolvedValue({ ...property, status: PropertyStatus.INSPECTION_PENDING, inspectionConsent: InspectionConsent.GRANTED })
+    notifications.sendEmail.mockClear()
+    await notifier.propertyReviewed('home', 'admin')
+    expect(notifications.sendEmail.mock.calls[0][0].html).not.toContain('We need your permission first')
+  })
+
+  it('tells the manager to arrange the inspection, or the admins to find a manager', async () => {
+    const { notifier, prisma, notifications } = setup()
+    prisma.property.findUnique.mockResolvedValue({ ...property, inspectionConsent: InspectionConsent.NOT_RECORDED })
+    await notifier.inspectionCoordinationNeeded('home', 'admin')
+    expect(sentTo(notifications)).toEqual(['manager@example.com'])
+    expect(notifications.sendEmail.mock.calls[0][0].html).toContain('has not consented yet')
+    notifications.sendEmail.mockClear()
+    prisma.property.findUnique.mockResolvedValue({ ...property, manager: null })
+    await notifier.inspectionCoordinationNeeded('home', 'someone-else')
+    expect(sentTo(notifications)).toEqual(['admin@example.com', 'admin2@example.com'])
+    expect(notifications.sendEmail.mock.calls[0][0].subject).toContain('Assign a manager')
+  })
+
+  it('emails the owner a consent request that does not promise open access', async () => {
+    const { notifier, notifications } = setup()
+    await notifier.inspectionConsentRequested('home', 'manager')
+    const [mail] = notifications.sendEmail.mock.calls.map(([input]) => input)
+    expect(mail.to).toBe('owner@example.com')
+    expect(mail.html).toContain('not permission to enter at any time')
+    expect(mail.html).toContain('https://app.example.com/properties/home')
+  })
+
+  it('tells the manager what the owner answered, and gives the owner a receipt when staff recorded it', async () => {
+    const { notifier, prisma, notifications } = setup()
+    prisma.property.findUnique.mockResolvedValue({ ...property, inspectionConsent: InspectionConsent.DISCUSSION_REQUESTED, inspectionConsentById: 'owner', inspectionConsentNote: null })
+    await notifier.inspectionConsentRecorded('home', 'owner')
+    expect(sentTo(notifications)).toEqual(['manager@example.com'])
+    expect(notifications.sendEmail.mock.calls[0][0].subject).toContain('discussion requested')
+    notifications.sendEmail.mockClear()
+    prisma.property.findUnique.mockResolvedValue({ ...property, inspectionConsent: InspectionConsent.GRANTED, inspectionConsentById: 'manager', inspectionConsentNote: 'Agreed by phone' })
+    await notifier.inspectionConsentRecorded('home', 'manager')
+    expect(sentTo(notifications)).toEqual(['owner@example.com'])
+    expect(notifications.sendEmail.mock.calls[0][0].subject).toContain('consent recorded')
+  })
+
+  it('tells the inspector and owner once access is confirmed', async () => {
+    const { notifier, prisma, notifications } = setup()
+    prisma.inspection.findUnique.mockResolvedValue({ id: 'visit', purpose: 'Routine', scheduledAt: new Date('2030-01-01T10:00:00Z'), inspectorId: inspector.id, accessContact: 'Caretaker <Bola>', inspector, property })
+    await notifier.inspectionAccessConfirmed('visit', 'manager')
+    expect(sentTo(notifications)).toEqual(['inspector@example.com', 'owner@example.com'])
+    expect(notifications.sendEmail.mock.calls[0][0].html).toContain('Caretaker &lt;Bola&gt;')
   })
 
   it('strips line breaks from subjects', async () => {
