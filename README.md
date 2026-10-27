@@ -19,6 +19,17 @@ Inspections need the owner's consent and a confirmed way in before the inspector
 
 New properties start as drafts and require completed, categorized ownership evidence before `POST /properties/:id/submit` sends them for review. Documents accept PDF, JPEG, or PNG up to 5,000,000 bytes each. Existing property statuses are preserved by the migration. See [property ownership and submission](docs/property-ownership.md) for the API sequence, storage access, and rollout.
 
+## API contract (OpenAPI)
+
+The OpenAPI 3 spec is generated from the controllers and DTO validation rules, so it changes with the code.
+
+- Swagger UI: `/api/docs`. Raw spec: `/api/docs-json` and `/api/docs-yaml`. Served when `NODE_ENV` is not `production`, or when `API_DOCS_ENABLED=true`.
+- `npm run openapi:export` writes [docs/openapi.json](docs/openapi.json) without connecting to the database. Re-export and commit it whenever endpoints or DTOs change, so the spec diff shows contract changes in review.
+- Each operation lists its allowed roles under `x-roles` and in its description. Error responses share the `ErrorResponse` schema; validation errors return one message per invalid field.
+- Request bodies, parameters, roles and error codes are specified. Success response bodies are not yet typed.
+
+Schemas are inferred by the `@nestjs/swagger` CLI plugin (`nest-cli.json`), which only runs under `nest build`/`nest start`. Use a JSDoc comment on a DTO property to give it a description.
+
 ## Account endpoints
 
 All paths below are under `/api/v1`.

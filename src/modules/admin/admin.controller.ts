@@ -8,7 +8,8 @@ import {
   Query,
   UseGuards,
 } from '@nestjs/common'
-import { UserRole } from '@prisma/client'
+import { ApiBearerAuth, ApiQuery, ApiTags } from '@nestjs/swagger'
+import { UserRole, UserStatus } from '@prisma/client'
 import { CurrentUser } from '../../common/decorators/current-user.decorator'
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard'
 import { RolesGuard } from '../../common/guards/roles.guard'
@@ -17,6 +18,7 @@ import { Roles } from '../../common/decorators/roles.decorator'
 import { AdminService } from './admin.service'
 import { CreateStaffInvitationDto } from './dto/create-staff-invitation.dto'
 
+@ApiTags('Admin') @ApiBearerAuth()
 @Controller('admin')
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles(UserRole.ADMIN)
@@ -36,11 +38,14 @@ export class AdminController {
   @Get('analytics')
   analytics() { return this.adminService.analytics() }
 
+  @ApiQuery({ name: 'cursor', required: false, format: 'uuid', description: 'Last audit entry id from the previous page (pages of 50)' })
   @Get('audit')
   audit(@Query('cursor') cursor?: string, @Query('action') action?: string, @Query('entityType') entityType?: string) {
     return this.adminService.auditLog({ cursor, action, entityType })
   }
 
+  @ApiQuery({ name: 'role', required: false, enum: UserRole })
+  @ApiQuery({ name: 'status', required: false, enum: UserStatus })
   @Get('users')
   users(
     @Query('role') role?: string,

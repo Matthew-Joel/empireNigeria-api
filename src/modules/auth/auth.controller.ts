@@ -6,6 +6,7 @@ import {
   Post,
   UseGuards,
 } from '@nestjs/common'
+import { ApiBearerAuth, ApiTags, ApiTooManyRequestsResponse } from '@nestjs/swagger'
 import { CurrentUser } from '../../common/decorators/current-user.decorator'
 import { AuthenticatedRequest } from '../../common/types/request-with-user'
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard'
@@ -17,6 +18,8 @@ import { RegisterDto } from './dto/register.dto'
 import { ChallengeCodeDto, EmailDto, ResetPasswordDto, UpdateProfileDto } from './dto/account.dto'
 import { AuthRateLimitGuard } from './auth-rate-limit.guard'
 
+@ApiTags('Auth')
+@ApiTooManyRequestsResponse({ description: 'More than 15 POST requests per minute from one IP to the same path' })
 @Controller('auth')
 @UseGuards(AuthRateLimitGuard)
 export class AuthController {
@@ -68,18 +71,21 @@ export class AuthController {
   }
 
   @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
   @Get('me')
   me(@CurrentUser() user: AuthenticatedRequest['user']) {
     return this.authService.getCurrentUser(user.sub)
   }
 
   @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
   @Patch('me')
   updateProfile(@CurrentUser() user: AuthenticatedRequest['user'], @Body() dto: UpdateProfileDto) {
     return this.authService.updateProfile(user.sub, dto)
   }
 
   @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
   @Post('logout')
   logout(@CurrentUser() user: AuthenticatedRequest['user']) {
     return this.authService.logout(user.sub)

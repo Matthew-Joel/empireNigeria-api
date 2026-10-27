@@ -1,4 +1,5 @@
 import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Post, Query, UseGuards } from '@nestjs/common'
+import { ApiBearerAuth, ApiQuery, ApiTags } from '@nestjs/swagger'
 import { UserRole } from '@prisma/client'
 import { CurrentUser } from '../../common/decorators/current-user.decorator'
 import { Roles } from '../../common/decorators/roles.decorator'
@@ -10,6 +11,7 @@ import { MaintenanceService } from './maintenance.service'
 
 type Actor = AuthenticatedRequest['user']
 
+@ApiTags('Maintenance') @ApiBearerAuth()
 @Controller('maintenance')
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles(UserRole.OWNER, UserRole.PROPERTY_MANAGER, UserRole.CONTRACTOR, UserRole.ADMIN)
@@ -62,6 +64,7 @@ export class MaintenanceController {
   @Roles(UserRole.OWNER, UserRole.CONTRACTOR)
   completeEvidence(@Param('id', ParseUUIDPipe) id: string, @Param('evidenceId', ParseUUIDPipe) evidenceId: string, @CurrentUser() actor: Actor) { return this.maintenance.completeEvidence(id, evidenceId, actor) }
 
+  @ApiQuery({ name: 'download', required: false, enum: ['true', 'false'], description: 'Force a download link instead of inline viewing' })
   @Get(':id/evidence/:evidenceId/url')
   evidenceUrl(@Param('id', ParseUUIDPipe) id: string, @Param('evidenceId', ParseUUIDPipe) evidenceId: string, @CurrentUser() actor: Actor, @Query('download') download?: string) { return this.maintenance.evidenceUrl(id, evidenceId, actor, download) }
 

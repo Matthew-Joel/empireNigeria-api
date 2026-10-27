@@ -1,10 +1,12 @@
 import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Post, UseGuards } from '@nestjs/common'
+import { ApiBearerAuth, ApiTags } from '@nestjs/swagger'
 import { CurrentUser } from '../../common/decorators/current-user.decorator'
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard'
 import { AuthenticatedRequest } from '../../common/types/request-with-user'
 import { StartProfileImageUploadDto } from './dto/profile-image.dto'
 import { ProfileImageService } from './profile-image.service'
 
+@ApiTags('Profile image') @ApiBearerAuth()
 @Controller('auth/me/avatar')
 @UseGuards(JwtAuthGuard)
 export class ProfileImageController {

@@ -1,4 +1,5 @@
 import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Patch, Post, Query, UseGuards } from '@nestjs/common'
+import { ApiBearerAuth, ApiQuery, ApiTags } from '@nestjs/swagger'
 import { UserRole } from '@prisma/client'
 import { CurrentUser } from '../../common/decorators/current-user.decorator'
 import { Roles } from '../../common/decorators/roles.decorator'
@@ -10,6 +11,7 @@ import { PropertiesService } from './properties.service'
 
 type Actor = AuthenticatedRequest['user']
 
+@ApiTags('Properties') @ApiBearerAuth()
 @Controller('properties')
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles(UserRole.OWNER, UserRole.PROPERTY_MANAGER, UserRole.ADMIN)
@@ -49,6 +51,7 @@ export class PropertiesController {
   @Post(':id/files/:fileId/complete')
   completeUpload(@Param('id', ParseUUIDPipe) id: string, @Param('fileId', ParseUUIDPipe) fileId: string, @CurrentUser() actor: Actor) { return this.properties.completeUpload(id, fileId, actor) }
 
+  @ApiQuery({ name: 'download', required: false, enum: ['true', 'false'], description: 'Force a download link instead of inline viewing' })
   @Get(':id/files/:fileId/url')
   fileUrl(@Param('id', ParseUUIDPipe) id: string, @Param('fileId', ParseUUIDPipe) fileId: string, @CurrentUser() actor: Actor, @Query('download') download?: string) { return this.properties.fileUrl(id, fileId, actor, download) }
 

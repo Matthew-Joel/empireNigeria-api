@@ -14,10 +14,13 @@ export class CreatePropertyDto {
   @IsString() @MinLength(2) @MaxLength(100) state!: string
   @IsString() @MinLength(2) @MaxLength(100) country!: string
   @IsEnum(PropertyOccupancy) occupancyStatus!: PropertyOccupancy
+  /** Required when occupancyStatus is OCCUPIED. */
   @ValidateIf((value: CreatePropertyDto) => value.occupancyStatus === PropertyOccupancy.OCCUPIED)
   @IsString() @MinLength(2) @MaxLength(160) tenantName?: string
+  /** Required when occupancyStatus is OCCUPIED. */
   @ValidateIf((value: CreatePropertyDto) => value.occupancyStatus === PropertyOccupancy.OCCUPIED)
   @IsString() @MinLength(5) @MaxLength(30) tenantPhone?: string
+  /** Required when occupancyStatus is OCCUPIED. ISO 8601 date. */
   @ValidateIf((value: CreatePropertyDto) => value.occupancyStatus === PropertyOccupancy.OCCUPIED)
   @IsDateString() tenancyStart?: string
   @IsOptional() @IsIn(consentAnswers) inspectionConsent?: InspectionConsent

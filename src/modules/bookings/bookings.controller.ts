@@ -1,4 +1,5 @@
 import { Body, Controller, Get, Param, ParseUUIDPipe, Post, UseGuards } from '@nestjs/common'
+import { ApiBearerAuth, ApiTags } from '@nestjs/swagger'
 import { UserRole } from '@prisma/client'
 import { CurrentUser } from '../../common/decorators/current-user.decorator'
 import { Roles } from '../../common/decorators/roles.decorator'
@@ -9,6 +10,7 @@ import { BookingsService } from './bookings.service'
 import { CreateBookingDto, DecideBookingDto } from './dto/booking.dto'
 
 type Actor = AuthenticatedRequest['user']
+@ApiTags('Bookings') @ApiBearerAuth()
 @Controller('bookings')
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles(UserRole.GUEST, UserRole.OWNER, UserRole.PROPERTY_MANAGER, UserRole.ADMIN)
